@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # Dépendances vcpkg liées statiquement : la DLL est chargée par LoadLibrary depuis
 # build/, Windows ne chercherait pas ses DLL dépendantes à côté d'elle.
 set(VCPKG_TARGET_TRIPLET x64-windows-static CACHE STRING "")
-project(WarbandVR VERSION 0.1.0 LANGUAGES CXX)
+project(WarbandVR VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,5 +66,5 @@ add_executable(warband_vr_config WIN32 config_tool/main.cpp src/util/config.cpp)
 target_include_directories(warband_vr_config PRIVATE src)
 target_compile_definitions(warband_vr_config PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(warband_vr_config PRIVATE /utf-8 /W4)
-target_link_libraries(warband_vr_config PRIVATE comctl32)
+target_link_libraries(warband_vr_config PRIVATE comctl32 winhttp)
 set_property(TARGET warband_vr_config PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

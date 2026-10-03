@@ -6,18 +6,36 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <string>
 
 namespace config {
 namespace {
 
 constexpr Text kDisplay{"Display", "Affichage"};
 constexpr Text kControls{"Controls", "Controles"};
+constexpr Text kLaunch{"Launch", "Lancement"};
 constexpr Text kCombat{"Combat", "Combat"};
 constexpr Text kAdvanced{"Advanced", "Avance"};
 constexpr Text kNone{nullptr, nullptr};
 
+// Valeurs des réglages texte (rarement lues : un verrou suffit)
+std::mutex g_textMutex;
+std::string g_texts[kCount];
+
 // Valeurs par défaut = réglages validés au casque (Quest 2)
 const Definition kDefs[kCount] = {
+    // Lancement
+    {"Launch", "game_dir", kLaunch, {"Game folder", "Dossier du jeu"}, Kind::Text, 0, 0, 0, kNone,
+     {"Folder containing mb_warband_wse2_x64.exe. Used by the launcher.",
+      "Dossier contenant mb_warband_wse2_x64.exe. Utilise par le lanceur."},
+     "C:\\Program Files (x86)\\Steam\\steamapps\\common\\MountBlade Warband"},
+    {"Launch", "module", kLaunch, {"Module", "Module"}, Kind::Text, 0, 0, 0, kNone,
+     {"Module started by the launcher: folder name in Modules, or \"<title> (Steam Workshop)\" for a Steam "
+      "Workshop module (Steam must be running).",
+      "Module lance par le lanceur : nom de son dossier dans Modules, ou \"<titre> (Steam Workshop)\" pour un "
+      "module du Steam Workshop (Steam doit etre lance)."},
+     "Native"},
     // Affichage
     {"Display", "roll_mode", kDisplay, {"Roll mode (head tilt)", "Mode de roulis (tete inclinee)"}, Kind::Choice, 0,
      0, 2, {"Inverted compositor|Compositor|Game", "Compositeur inverse|Compositeur|Jeu"},
@@ -181,8 +199,23 @@ void Set(Id id, float value)
 
 void ResetDefaults()
 {
-    for (int i = 0; i < kCount; ++i)
+    for (int i = 0; i < kCount; ++i) {
         g_values[i] = kDefs[i].defaultValue;
+        if (kDefs[i].kind == Kind::Text)
+            SetText(static_cast<Id>(i), kDefs[i].defaultText ? kDefs[i].defaultText : "");
+    }
+}
+
+std::string GetText(Id id)
+{
+    std::lock_guard lock(g_textMutex);
+    return g_texts[static_cast<int>(id)];
+}
+
+void SetText(Id id, const std::string& value)
+{
+    std::lock_guard lock(g_textMutex);
+    g_texts[static_cast<int>(id)] = value;
 }
 
 std::string DefaultPath()
@@ -201,6 +234,12 @@ bool Load(const std::string& path)
     if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
         return false;
     for (int i = 0; i < kCount; ++i) {
+        if (kDefs[i].kind == Kind::Text) {
+            char text[1024]{};
+            GetPrivateProfileStringA(kDefs[i].section, kDefs[i].key, "", text, sizeof(text), path.c_str());
+            SetText(static_cast<Id>(i), text[0] ? text : kDefs[i].defaultText);
+            continue;
+        }
         char buf[64]{};
         GetPrivateProfileStringA(kDefs[i].section, kDefs[i].key, "", buf, sizeof(buf), path.c_str());
         if (!buf[0]) {
@@ -230,6 +269,10 @@ bool Save(const std::string& path)
             section = d.section;
         }
         fprintf(f, "; %s", d.help.en);
+        if (d.kind == Kind::Text) {
+            fprintf(f, "\n%s=%s\n", d.key, GetText(static_cast<Id>(i)).c_str());
+            continue;
+        }
         if (d.kind == Kind::Bool)
             fprintf(f, " (0 = no, 1 = yes)");
         else if (d.kind == Kind::Choice)

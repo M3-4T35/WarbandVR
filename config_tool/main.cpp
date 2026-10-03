@@ -8,9 +8,11 @@
 #include "util/config.h"
 
 #include <windows.h>
+#include <winhttp.h>
 #include <commctrl.h>
 
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -55,6 +57,191 @@ std::wstring W(const char* s)
     return w;
 }
 
+std::wstring FromAnsi(const std::string& s)
+{
+    const int n = MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+    if (n > 1)
+        MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
+std::string ToAnsi(const std::wstring& w)
+{
+    const int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string s(n > 0 ? n - 1 : 0, '\0');
+    if (n > 1)
+        WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+std::wstring ControlText(HWND c)
+{
+    const int len = GetWindowTextLengthW(c);
+    std::wstring w(len, L'\0');
+    if (len)
+        GetWindowTextW(c, w.data(), len + 1);
+    return w;
+}
+
+// --- Modules du Steam Workshop ------------------------------------------------------------
+// WSE2 les lance avec --module "<titre Steam> (Steam Workshop)" (comme dans son propre menu)
+// et retrouve leur dossier auprès de Steam. Leurs dossiers locaux ne portent que l'identifiant
+// (steamapps\workshop\content\48700\<id>) : les titres sont demandés à l'API web publique
+// de Steam (GetPublishedFileDetails, sans clé), une fois par lancement de l'outil.
+constexpr wchar_t kWorkshopSuffix[] = L" (Steam Workshop)";
+std::map<std::wstring, std::wstring> g_workshopTitles; // identifiant -> titre
+bool g_workshopFetched = false;
+
+std::wstring Utf8ToWide(const std::string& s)
+{
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+    if (n > 1)
+        MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
+// Chaîne JSON qui suit "key": dans text à partir de pos (échappements simples, \uXXXX)
+bool JsonString(const std::string& text, const char* key, size_t& pos, std::string& out)
+{
+    const std::string k = std::string("\"") + key + "\"";
+    size_t p = text.find(k, pos);
+    if (p == std::string::npos)
+        return false;
+    p = text.find('"', text.find(':', p + k.size()));
+    if (p == std::string::npos)
+        return false;
+    out.clear();
+    for (++p; p < text.size() && text[p] != '"'; ++p) {
+        char c = text[p];
+        if (c == '\\' && p + 1 < text.size()) {
+            c = text[++p];
+            if (c == 'u' && p + 4 < text.size()) {
+                const unsigned cp = std::stoul(text.substr(p + 1, 4), nullptr, 16);
+                p += 4;
+                // UTF-16 (BMP) -> UTF-8
+                if (cp < 0x80) {
+                    out += static_cast<char>(cp);
+                } else if (cp < 0x800) {
+                    out += static_cast<char>(0xC0 | (cp >> 6));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                } else {
+                    out += static_cast<char>(0xE0 | (cp >> 12));
+                    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                    out += static_cast<char>(0x80 | (cp & 0x3F));
+                }
+                continue;
+            }
+            c = c == 'n' ? '\n' : c == 't' ? '\t' : c;
+        }
+        out += c;
+    }
+    pos = p;
+    return true;
+}
+
+std::string HttpPost(const wchar_t* host, const wchar_t* path, const std::string& body)
+{
+    std::string response;
+    HINTERNET session = WinHttpOpen(L"WarbandVR", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session)
+        return response;
+    WinHttpSetTimeouts(session, 4000, 4000, 4000, 6000);
+    HINTERNET connect = WinHttpConnect(session, host, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET request = connect ? WinHttpOpenRequest(connect, L"POST", path, nullptr, WINHTTP_NO_REFERER,
+                                                     WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)
+                                : nullptr;
+    const wchar_t* headers = L"Content-Type: application/x-www-form-urlencoded\r\n";
+    if (request &&
+        WinHttpSendRequest(request, headers, static_cast<DWORD>(-1L), const_cast<char*>(body.data()),
+                           static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0) &&
+        WinHttpReceiveResponse(request, nullptr)) {
+        DWORD available = 0;
+        while (WinHttpQueryDataAvailable(request, &available) && available) {
+            std::string chunk(available, '\0');
+            DWORD read = 0;
+            if (!WinHttpReadData(request, chunk.data(), available, &read) || !read)
+                break;
+            response.append(chunk.data(), read);
+        }
+    }
+    if (request)
+        WinHttpCloseHandle(request);
+    if (connect)
+        WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+    return response;
+}
+
+// Identifiants des objets du Workshop installés (dossiers à côté du dossier du jeu)
+std::vector<std::wstring> WorkshopIds(const std::wstring& gameDir)
+{
+    std::vector<std::wstring> ids;
+    const std::wstring pattern = gameDir + L"\\..\\..\\workshop\\content\\48700\\*";
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(pattern.c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE)
+        return ids;
+    do {
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] >= L'0' && fd.cFileName[0] <= L'9')
+            ids.push_back(fd.cFileName);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return ids;
+}
+
+void FetchWorkshopTitles(const std::vector<std::wstring>& ids)
+{
+    g_workshopFetched = true;
+    if (ids.empty())
+        return;
+    std::string body = "itemcount=" + std::to_string(ids.size());
+    for (size_t i = 0; i < ids.size(); ++i)
+        body += "&publishedfileids%5B" + std::to_string(i) + "%5D=" + ToAnsi(ids[i]);
+    const std::string json =
+        HttpPost(L"api.steampowered.com", L"/ISteamRemoteStorage/GetPublishedFileDetails/v1/", body);
+    size_t pos = 0;
+    std::string id, title;
+    while (JsonString(json, "publishedfileid", pos, id)) {
+        size_t next = pos;
+        std::string nextId;
+        const size_t nextItem = JsonString(json, "publishedfileid", next, nextId) ? next : std::string::npos;
+        size_t t = pos;
+        if (JsonString(json, "title", t, title) && t < nextItem && !title.empty())
+            g_workshopTitles[Utf8ToWide(id)] = Utf8ToWide(title);
+    }
+}
+
+// Liste du réglage Module : dossiers de <dossier du jeu>\\Modules, puis modules du Workshop
+void FillModules()
+{
+    HWND combo = g_rows[static_cast<int>(Id::Module)].control;
+    const std::wstring current = ControlText(combo);
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    const std::wstring dir = ControlText(g_rows[static_cast<int>(Id::GameDir)].control) + L"\\Modules\\*";
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(dir.c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != L'.')
+                SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(fd.cFileName));
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    const std::wstring gameDir = ControlText(g_rows[static_cast<int>(Id::GameDir)].control);
+    const std::vector<std::wstring> ids = WorkshopIds(gameDir);
+    if (!g_workshopFetched)
+        FetchWorkshopTitles(ids);
+    for (const std::wstring& id : ids) {
+        auto it = g_workshopTitles.find(id);
+        if (it != g_workshopTitles.end())
+            SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>((it->second + kWorkshopSuffix).c_str()));
+    }
+    SetWindowTextW(combo, current.c_str());
+}
+
 const wchar_t* T(const wchar_t* en, const wchar_t* fr)
 {
     return g_lang == Lang::French ? fr : en;
@@ -94,6 +281,8 @@ void RefreshControls()
             SendMessageW(c, BM_SETCHECK, config::GetBool(static_cast<Id>(i)) ? BST_CHECKED : BST_UNCHECKED, 0);
         } else if (d.kind == Kind::Choice) {
             SendMessageW(c, CB_SETCURSEL, config::GetInt(static_cast<Id>(i)), 0);
+        } else if (d.kind == Kind::Text) {
+            SetWindowTextW(c, FromAnsi(config::GetText(static_cast<Id>(i))).c_str());
         } else {
             wchar_t buf[32];
             swprintf_s(buf, L"%g", config::Get(static_cast<Id>(i)));
@@ -142,6 +331,8 @@ bool ReadControls()
             config::Set(static_cast<Id>(i), SendMessageW(c, BM_GETCHECK, 0, 0) == BST_CHECKED ? 1.0f : 0.0f);
         } else if (d.kind == Kind::Choice) {
             config::Set(static_cast<Id>(i), static_cast<float>(SendMessageW(c, CB_GETCURSEL, 0, 0)));
+        } else if (d.kind == Kind::Text) {
+            config::SetText(static_cast<Id>(i), ToAnsi(ControlText(c)));
         } else {
             wchar_t buf[32]{};
             GetWindowTextW(c, buf, 32);
@@ -191,7 +382,7 @@ void Layout()
             lastSection = d.section;
         }
         MoveWindow(g_rows[i].label, S(20), y + S(4), labelW, S(22), TRUE);
-        const int ch = d.kind == Kind::Choice ? S(200) : S(24);
+        const int ch = d.kind == Kind::Choice || i == static_cast<int>(Id::Module) ? S(200) : S(24);
         MoveWindow(g_rows[i].control, controlX, y, d.kind == Kind::Float ? S(90) : controlW, ch, TRUE);
         y += S(32);
     }
@@ -226,7 +417,11 @@ void ShowHelp(int index)
 {
     const config::Definition& d = config::Def(static_cast<Id>(index));
     wchar_t def[64];
-    if (d.kind == Kind::Bool)
+    std::wstring textDefault;
+    if (d.kind == Kind::Text) {
+        textDefault = std::wstring(T(L"  (default: ", L"  (defaut : ")) + W(d.defaultText) + L")";
+        def[0] = 0;
+    } else if (d.kind == Kind::Bool)
         swprintf_s(def, T(L"  (default: %s)", L"  (defaut : %s)"),
                    d.defaultValue != 0 ? T(L"yes", L"oui") : T(L"no", L"non"));
     else if (d.kind == Kind::Choice)
@@ -234,7 +429,7 @@ void ShowHelp(int index)
                    Split(d.choices(g_lang))[static_cast<int>(d.defaultValue)].c_str());
     else
         swprintf_s(def, T(L"  (default: %g)", L"  (defaut : %g)"), d.defaultValue);
-    SetWindowTextW(g_help, (W(d.help(g_lang)) + def).c_str());
+    SetWindowTextW(g_help, (W(d.help(g_lang)) + def + textDefault).c_str());
 }
 
 // Panneau défilant : relaie les commandes des contrôles à la fenêtre principale
@@ -264,6 +459,9 @@ LRESULT CALLBACK PanelProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (id >= kIdSettingBase && id < kIdSettingBase + config::kCount &&
             (code == EN_SETFOCUS || code == CBN_SETFOCUS || code == BN_SETFOCUS || code == BN_CLICKED))
             ShowHelp(id - kIdSettingBase);
+        // Dossier du jeu modifié : liste des modules mise à jour
+        if (id == kIdSettingBase + static_cast<int>(Id::GameDir) && code == EN_KILLFOCUS)
+            FillModules();
         return 0;
     }
     case WM_CTLCOLORSTATIC: {
@@ -308,6 +506,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case kIdDefaults:
             config::ResetDefaults();
             RefreshControls();
+            FillModules();
             SetWindowTextW(g_help, T(L"Default values restored (click Save to write them).",
                                      L"Valeurs par defaut restaurees (cliquez sur Enregistrer pour les ecrire)."));
             return 0;
@@ -390,12 +589,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             g_rows[i].control = Create(L"BUTTON", L"", BS_AUTOCHECKBOX | WS_TABSTOP, g_panel, id);
         else if (d.kind == Kind::Choice)
             g_rows[i].control = Create(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, g_panel, id);
+        else if (i == static_cast<int>(Id::Module)) // liste modifiable : modules installés
+            g_rows[i].control = Create(L"COMBOBOX", L"", CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_SORT | WS_TABSTOP | WS_VSCROLL,
+                                       g_panel, id);
         else
             g_rows[i].control = Create(L"EDIT", L"", ES_LEFT | ES_AUTOHSCROLL | WS_TABSTOP, g_panel, id, WS_EX_CLIENTEDGE);
     }
 
     RefreshTexts();
     RefreshControls();
+    FillModules();
     Layout();
     ShowWindow(g_window, show);
 

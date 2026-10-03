@@ -7,6 +7,9 @@
 namespace config {
 
 enum class Id {
+    // Lancement (lu par l'injecteur)
+    GameDir,
+    Module,
     // Affichage
     RollMode,
     ScreenDistance,
@@ -42,7 +45,7 @@ enum class Id {
     Count
 };
 
-enum class Kind { Float, Bool, Choice };
+enum class Kind { Float, Bool, Choice, Text };
 enum class Lang { English, French };
 
 struct Text {
@@ -61,6 +64,7 @@ struct Definition {
     float minValue, maxValue;
     Text choices;        // Choice : libellés séparés par '|'
     Text help;           // explication courte
+    const char* defaultText = nullptr; // Text : valeur par défaut
 };
 
 const Definition& Def(Id id);
@@ -71,6 +75,9 @@ float Get(Id id);
 bool GetBool(Id id);
 int GetInt(Id id);
 void Set(Id id, float value); // borné à [min, max]
+// Réglages texte (Kind::Text)
+std::string GetText(Id id);
+void SetText(Id id, const std::string& value);
 void ResetDefaults();
 
 // Fichier : chargement (valeurs absentes = défaut), enregistrement complet

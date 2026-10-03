@@ -65,6 +65,16 @@ std::wstring FullPath(const std::wstring& p)
     return (n && n < MAX_PATH) ? std::wstring(buf) : p;
 }
 
+// Texte du fichier de réglages (page de code ANSI) vers UTF-16
+std::wstring FromAnsi(const std::string& s)
+{
+    const int n = MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+    if (n > 1)
+        MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
 bool FileExists(const std::wstring& p)
 {
     DWORD a = GetFileAttributesW(p.c_str());
@@ -165,7 +175,15 @@ int wmain(int argc, wchar_t** argv)
     _setmode(_fileno(stdout), _isatty(_fileno(stdout)) ? _O_U16TEXT : _O_U8TEXT);
     _setmode(_fileno(stderr), _isatty(_fileno(stderr)) ? _O_U16TEXT : _O_U8TEXT);
 
+    // Réglages du fichier warband_vr.ini (dossier du jeu, module, runtime), à côté de
+    // l'injecteur ; la ligne de commande reste prioritaire
+    config::Load(config::DefaultPath());
     std::wstring gameDir = kDefaultGameDir;
+    {
+        const std::string dir = config::GetText(config::Id::GameDir);
+        if (!dir.empty())
+            gameDir = FromAnsi(dir);
+    }
     std::wstring dllPath = DirOfSelf() + L"\\" + kDllName;
     std::wstring gameArgs;
     bool early = false;
@@ -198,7 +216,10 @@ int wmain(int argc, wchar_t** argv)
                 if (!gameArgs.empty())
                     gameArgs += L' ';
                 std::wstring arg = argv[i];
-                gameArgs += arg.find(L' ') != std::wstring::npos ? L"\"" + arg + L"\"" : arg;
+                // Sans guillemets : WSE2 découpe sa ligne de commande aux espaces et recolle les
+                // mots d'une option (--module Viking Conquest) ; des guillemets resteraient dans
+                // le nom du module, comme le fait aussi wse2_launcher.exe
+                gameArgs += arg;
             }
         } else if (a == L"-h" || a == L"--help") {
             Usage();
@@ -209,8 +230,13 @@ int wmain(int argc, wchar_t** argv)
             return 2;
         }
     }
-    if (!customArgs)
-        gameArgs = kDefaultGameArgs;
+    if (!customArgs) {
+        const std::string module = config::GetText(config::Id::Module);
+        if (module.empty())
+            gameArgs = kDefaultGameArgs;
+        else
+            gameArgs = L"--module " + FromAnsi(module) + L" --no-intro"; // comme wse2_launcher.exe
+    }
 
     dllPath = FullPath(dllPath);
     const std::wstring exePath = gameDir + L"\\" + kExeName;
@@ -228,7 +254,6 @@ int wmain(int argc, wchar_t** argv)
     // chargeur OpenXR la préfère au runtime actif de Windows)
     // Sans option : réglage du fichier warband_vr.ini (à côté de l'injecteur et de la DLL)
     if (!runtimeChosen) {
-        config::Load(config::DefaultPath());
         steamvr = config::GetInt(config::Id::OpenXRRuntime) == 1;
         if (steamvr)
             wprintf(L"[injector] Runtime VR : SteamVR (warband_vr.ini)\n");

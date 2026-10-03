@@ -65,8 +65,8 @@ les valeurs par défaut. Le journal `warband_vr.log` y est écrit à chaque sess
 
 1. Branchez et allumez le casque, puis démarrez son logiciel (Quest Link ou SteamVR).
    Pour un casque sans fil (Steam Frame…), connectez-le au PC.
-2. Lancez **`warband_vr_injector.exe`**. Il démarre le jeu (module Native par défaut) et
-   injecte le mod.
+2. Lancez **`warband_vr_injector.exe`**. Il démarre le jeu avec le module choisi dans l'outil
+   de configuration (Native par défaut) et injecte le mod.
 3. Mettez le casque : les menus apparaissent sur un écran virtuel devant vous.
 
 Le mod attend le casque s'il n'est pas encore prêt : l'ordre n'a pas d'importance.
@@ -84,12 +84,18 @@ warband_vr_injector.exe [--game-dir <dossier>] [--steamvr | --runtime <json> | -
 | `--steamvr` | Utilise SteamVR pour ce lancement, sans changer le runtime OpenXR de Windows |
 | `--runtime <json>` | Utilise le manifeste OpenXR d'un autre runtime |
 | `--default-runtime` | Force le runtime OpenXR de Windows |
-| `-- <arguments>` | Arguments passés au jeu ; par défaut `--module Native --no-intro` |
+| `-- <arguments>` | Arguments passés au jeu ; par défaut `--module <réglage Module> --no-intro` |
 
-Sans option de runtime, le lanceur suit le réglage **« Runtime VR (OpenXR) »** de l'outil de
-configuration.
+Sans ces options, le lanceur suit l'outil de configuration : **« Dossier du jeu »**,
+**« Module »** et **« Runtime VR (OpenXR) »**.
 
-Exemple pour un autre module :
+### Jouer un autre module
+
+Choisissez-le dans l'outil de configuration (**Lancement → Module** : liste des modules
+installés dans le dossier `Modules` du jeu), enregistrez, puis lancez le lanceur. Les modules
+du **Steam Workshop** auxquels vous êtes abonné y figurent aussi, sous la forme
+`Titre (Steam Workshop)` : l'outil demande leurs titres à Steam (connexion internet
+nécessaire), et Steam doit être lancé pour y jouer. En ligne de commande :
 
 ```
 warband_vr_injector.exe -- --module "Viking Conquest" --no-intro
@@ -104,6 +110,8 @@ relus **en direct** par le jeu (environ 1 s) : pas besoin de relancer, sauf pour
 
 | Groupe | Réglage | Défaut |
 |---|---|---|
+| Lancement | Dossier du jeu | `C:\Program Files (x86)\Steam\steamapps\common\MountBlade Warband` |
+| | **Module** (liste des modules installés) | Native |
 | Affichage | Mode de roulis (tête inclinée) | Compositeur inversé |
 | | Écran virtuel : distance / largeur | 2 m / 2,4 m |
 | | HUD : distance / largeur | 4 m / 46,9° |

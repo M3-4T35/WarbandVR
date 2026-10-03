@@ -64,8 +64,8 @@ default values. The log `warband_vr.log` is written there at every session.
 
 1. Plug in and turn on the headset, then start its software (Quest Link or SteamVR). For a
    wireless headset (Steam Frame…), connect it to the PC.
-2. Run **`warband_vr_injector.exe`**. It starts the game (Native module by default) and
-   injects the mod.
+2. Run **`warband_vr_injector.exe`**. It starts the game with the module chosen in the
+   configuration tool (Native by default) and injects the mod.
 3. Put the headset on: the menus appear on a virtual screen in front of you.
 
 The mod waits for the headset if it is not ready yet, so the order does not matter.
@@ -83,12 +83,18 @@ warband_vr_injector.exe [--game-dir <folder>] [--steamvr | --runtime <json> | --
 | `--steamvr` | Uses SteamVR for this launch, without changing Windows' OpenXR runtime |
 | `--runtime <json>` | Uses another runtime's OpenXR manifest |
 | `--default-runtime` | Forces Windows' OpenXR runtime |
-| `-- <arguments>` | Arguments passed to the game; default `--module Native --no-intro` |
+| `-- <arguments>` | Arguments passed to the game; default `--module <Module setting> --no-intro` |
 
-Without a runtime option, the launcher follows the **"VR runtime (OpenXR)"** setting of the
-configuration tool.
+Without these options, the launcher follows the configuration tool: **"Game folder"**,
+**"Module"** and **"VR runtime (OpenXR)"**.
 
-Example for another module:
+### Playing another module
+
+Pick it in the configuration tool (**Launch → Module**, a list of the modules installed in
+the game's `Modules` folder), save, and run the launcher. **Steam Workshop** modules you are
+subscribed to also appear in the list, as `Title (Steam Workshop)`; the tool asks Steam for
+their titles (internet needed), and Steam must be running when you play them. From the
+command line:
 
 ```
 warband_vr_injector.exe -- --module "Viking Conquest" --no-intro
@@ -103,6 +109,8 @@ settings **live** (about 1 s): no restart needed, except for the VR runtime.
 
 | Group | Setting | Default |
 |---|---|---|
+| Launch | Game folder | `C:\Program Files (x86)\Steam\steamapps\common\MountBlade Warband` |
+| | **Module** (list of the installed modules) | Native |
 | Display | Roll mode (head tilt) | Inverted compositor |
 | | Virtual screen: distance / width | 2 m / 2.4 m |
 | | HUD: distance / width | 4 m / 46.9° |
