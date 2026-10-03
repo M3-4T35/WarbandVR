@@ -1,0 +1,7 @@
+build/
+wse/
+*.log
+capture_*.png
+capture_*.bmp
+CLAUDE.md
+dist/
