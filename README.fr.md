@@ -1,3 +1,5 @@
+*Ce projet a été créé avec l'aide de Claude Opus 5.5 (Anthropic).*
+
 # WarbandVR
 
 *[English version](README.md)*
@@ -15,7 +17,8 @@ ni de WSE2 n'est modifié.
 - Ordres aux troupes par un menu radial, pour tous les modules.
 - OpenXR : tout casque dont le runtime OpenXR est actif (Meta, SteamVR…).
 
-> **Solo uniquement.** N'utilisez jamais le mod sur un serveur multijoueur.
+> **Conçu pour le solo.** Son utilisation dans des parties multijoueur publiques est
+> déconseillée : il n'a été testé qu'en solo.
 
 ## Sommaire
 1. [Prérequis](#prérequis)
@@ -232,7 +235,7 @@ en campagne, pas en bataille personnalisée.
 - **S'accroupir** : non associé (désactivé dans Native).
 - **Carte des ordres** : dépend du module (voir plus haut). Le menu radial, lui, fonctionne
   partout.
-- **Multijoueur** : non pris en charge, et à ne pas utiliser.
+- **Multijoueur** : non pris en charge ; déconseillé dans les parties multijoueur publiques.
 - **Linux (Proton / Wine)** : **non testé**. Le mod est conçu pour Windows. Sous Proton, les
   points incertains sont le partage d'images Direct3D 9 → Direct3D 11 sous DXVK et OpenXR
   via `wineopenxr`. Retours bienvenus, avec le fichier `warband_vr.log`.

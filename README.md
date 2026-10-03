@@ -1,3 +1,5 @@
+*This project was created with the help of Claude Opus 5.5 (Anthropic).*
+
 # WarbandVR
 
 *[Version française](README.fr.md)*
@@ -14,7 +16,8 @@ into the game at launch. No game or WSE2 file is modified.
 - Troop orders through a radial menu, for every module.
 - OpenXR: any headset whose OpenXR runtime is active (Meta, SteamVR…).
 
-> **Single player only.** Never use the mod on a multiplayer server.
+> **Designed for single player.** Using it in public multiplayer games is not recommended: it
+> has only been tested in single player.
 
 ## Contents
 1. [Requirements](#requirements)
@@ -229,7 +232,7 @@ campaign, not in custom battles.
   steady cadence, but less so than true simultaneous rendering of both eyes.
 - **Crouching**: not bound (disabled in Native).
 - **Order map**: depends on the module (see above). The radial menu works everywhere.
-- **Multiplayer**: not supported, and must not be used.
+- **Multiplayer**: not supported; not recommended in public multiplayer games.
 - **Linux (Proton / Wine)**: **untested**. The mod is built for Windows. Under Proton, the
   uncertain parts are Direct3D 9 → Direct3D 11 frame sharing under DXVK and OpenXR through
   `wineopenxr`. Feedback welcome, with the `warband_vr.log` file.
