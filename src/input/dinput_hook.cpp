@@ -1,4 +1,5 @@
 #include "input/dinput_hook.h"
+#include "util/hook.h"
 #include "util/log.h"
 
 #define DIRECTINPUT_VERSION 0x0800
@@ -155,29 +156,9 @@ HRESULT STDMETHODCALLTYPE HkGetDeviceState(void* self, DWORD cbData, LPVOID data
     return hr;
 }
 
-void* VtableEntry(void* object, int index)
+bool Hook(void* object, int index, void* detour, void** original, const char* name)
 {
-    return (*reinterpret_cast<void***>(object))[index];
-}
-
-bool Hook(void* target, void* detour, void** original, const char* name)
-{
-    for (void* t : g_targets)
-        if (t == target) {
-            LOG_INPUT("  %-38s %p (deja detourne, partage)", name, target);
-            return true;
-        }
-    MH_STATUS st = MH_CreateHook(target, detour, original);
-    if (st == MH_OK)
-        st = MH_EnableHook(target);
-    if (st != MH_OK) {
-        LOG_INPUT("  %-38s ECHEC MinHook : %s", name, MH_StatusToString(st));
-        MH_RemoveHook(target);
-        return false;
-    }
-    g_targets.push_back(target);
-    LOG_INPUT("  %-38s %p detourne", name, target);
-    return true;
+    return hook::HookMethod(object, index, detour, original, name, "[input]", g_targets);
 }
 
 // Détourne GetDeviceData / GetDeviceState d'un périphérique factice (souris ou clavier)
@@ -187,9 +168,9 @@ bool HookDevice(Dev* dev, const char* label)
     char nameData[64], nameState[64];
     snprintf(nameData, sizeof(nameData), "%s::GetDeviceData", label);
     snprintf(nameState, sizeof(nameState), "%s::GetDeviceState", label);
-    bool ok = Hook(VtableEntry(dev, kGetDeviceData), reinterpret_cast<void*>(&HkGetDeviceData<V>),
+    bool ok = Hook(dev, kGetDeviceData, reinterpret_cast<void*>(&HkGetDeviceData<V>),
                    reinterpret_cast<void**>(&g_getDeviceData[V]), nameData);
-    ok &= Hook(VtableEntry(dev, kGetDeviceState), reinterpret_cast<void*>(&HkGetDeviceState<V>),
+    ok &= Hook(dev, kGetDeviceState, reinterpret_cast<void*>(&HkGetDeviceState<V>),
                reinterpret_cast<void**>(&g_getDeviceState[V]), nameState);
     return ok;
 }

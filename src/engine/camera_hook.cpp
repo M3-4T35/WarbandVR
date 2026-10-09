@@ -11,8 +11,10 @@
 #include "engine/camera_hook.h"
 #include "engine/combat_hook.h"
 #include "engine/rgl.h"
+#include "engine/true_stereo.h"
 #include "input/dinput_hook.h"
 #include "render/d3d9_hook.h"
+#include "render/frame_profile.h"
 #include "render/frame_share.h"
 #include "render/ui_redirect.h"
 #include "util/config.h"
@@ -32,9 +34,11 @@
 namespace engine {
 namespace {
 
-constexpr char kSceneRenderSig[] =
-    "44 88 44 24 18 55 53 56 41 54 41 55 41 56 41 57 48 8D 6C 24 D9 48 81 EC 00 01 00 00 F3 0F 10 15 ?? ?? ?? ?? "
-    "F3 0F 10 05 ?? ?? ?? ?? 0F 29 B4 24 E0 00 00 00 45 0F B6 E0 4C 8B F2 48 8B D9";
+// rglScene::render : prologue différent selon la version de WSE2 (registres sauvegardés)
+constexpr char kSceneRenderSigJul2026[] =
+    "44 88 44 24 18 55 53 56 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? 00 00";
+constexpr char kSceneRenderSigSep2026[] =
+    "44 88 44 24 18 55 53 41 54 41 55 41 56 41 57 48 8D 6C 24 ?? 48 81 EC ?? ?? 00 00 8B 05";
 constexpr char kRenderContextSig[] = "48 8B C4 44 88 40 18 55 41 57 48 8D A8 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? "
                                      "48 89 58 E8 48 89 70 E0 48 89 78 D8 4C 89 60 D0 4C 89 68 C8 4C 89 70 C0";
 constexpr char kComputePlanesSig[] =
@@ -57,18 +61,24 @@ struct Prepared {
     rgl::Vector4 s{}, f{}, o{};
     render::RenderView view;
 };
-constexpr int kPrepared = 4;
+constexpr int kPrepared = 8; // deux images par image du jeu en vraie stéréo, une image d'avance
 std::mutex g_mutex;
 Prepared g_prepared[kPrepared];
 int g_preparedNext = 0;
-int g_nextEye = 0; // œil rendu à la prochaine frame (rendu alterné)
+
+// Rendu alterné, décidé ici seulement (thread du jeu) : chaque paire = deux images
+// consécutives de la scène, un œil chacune, avec la même pose de tête. Le numéro de paire
+// suit l'image jusqu'au casque, qui n'affiche que des paires complètes.
+int g_indexInPair = 0;    // rang de la prochaine image dans sa paire (0 ou 1)
+uint64_t g_pairId = 0;    // paire en cours
+xr::HeadPose g_pairHead;  // pose de tête de la paire en cours
 
 bool SameAxis(const rgl::Vector4& a, const rgl::Vector4& b)
 {
     return a.x == b.x && a.y == b.y && a.z == b.z;
 }
 
-bool g_loggedApply = false;
+bool g_loggedApply = false; // stéréo appliquée au moins une fois
 bool g_loggedOverwrite = false;
 bool g_loggedPublish = false;
 
@@ -318,6 +328,81 @@ void AimAtHand(const rgl::Transform& game, float bx, float by)
     }
 }
 
+// Place la caméra cam sur un œil : orientation du casque sur le cap du corps (bx, by), origine
+// de la caméra du jeu (game) décalée de la position de l'œil, champ de vue asymétrique de
+// l'œil, frustum recalculé. La vue est enregistrée pour être retrouvée au rendu.
+void PrepareEye(rgl::Camera& cam, const rgl::Transform& game, const xr::HeadPose& head, int eyeIndex, float bx,
+                float by, bool both, const rgl::RenderContext* ctx)
+{
+    const xr::EyeView& eye = head.eyes[eyeIndex];
+
+    // renderHead : orientation appliquée à la caméra ; declaredQ : pose déclarée au casque,
+    // selon le mode de roulis
+    const Quat eyeQ{eye.qx, eye.qy, eye.qz, eye.qw};
+    Quat renderQ = eyeQ, declaredQ = eyeQ;
+    const int mode = g_rollMode;
+    if (mode != kRollGame) {
+        Quat yawPitch, roll;
+        SplitRoll(eyeQ, yawPitch, roll);
+        renderQ = yawPitch;
+        declaredQ = mode == kRollCompositor ? yawPitch : Mul(yawPitch, Conj(roll));
+    }
+    xr::HeadPose renderHead = head;
+    renderHead.qx = renderQ.x, renderHead.qy = renderQ.y, renderHead.qz = renderQ.z, renderHead.qw = renderQ.w;
+
+    cam.transform = game;
+    ApplyHead(cam, renderHead, bx, by);
+
+    // Position de l'œil par rapport au centre de la tête, dans le repère de la tête,
+    // reportée sur les axes de la caméra (1 unité du jeu = 1 m)
+    const Quat headQ{head.qx, head.qy, head.qz, head.qw};
+    const Quat d{eye.px - head.px, eye.py - head.py, eye.pz - head.pz, 0};
+    const Quat local = Mul(Mul(Conj(headQ), d), headQ);
+    rgl::Transform& t = cam.transform;
+    t.o.x += local.x * t.s.x + local.y * t.f.x + local.z * t.u.x;
+    t.o.y += local.x * t.s.y + local.y * t.f.y + local.z * t.u.y;
+    t.o.z += local.x * t.s.z + local.y * t.f.z + local.z * t.u.z;
+
+    // Champ de vue asymétrique de l'œil (le jeu construit sa projection avec
+    // D3DXMatrixPerspectiveOffCenterRH à partir de ces valeurs). Un champ de vue
+    // symétrique englobant a été essayé pour le nom de la cible : vision double au casque.
+    if (cam.znear > 0) {
+        cam.left = cam.znear * std::tan(eye.angleLeft);
+        cam.right = cam.znear * std::tan(eye.angleRight);
+        cam.top = cam.znear * std::tan(eye.angleUp);
+        cam.bottom = cam.znear * std::tan(eye.angleDown);
+    }
+    g_computePlanes(&cam);
+
+    render::RenderView view;
+    view.valid = cam.znear > 0;
+    view.eye = eyeIndex;
+    view.pair = g_pairId;
+    view.both = both;
+    view.qx = declaredQ.x, view.qy = declaredQ.y, view.qz = declaredQ.z, view.qw = declaredQ.w;
+    view.px = eye.px, view.py = eye.py, view.pz = eye.pz;
+    view.angleLeft = eye.angleLeft;
+    view.angleRight = eye.angleRight;
+    view.angleUp = eye.angleUp;
+    view.angleDown = eye.angleDown;
+    {
+        std::lock_guard lock(g_mutex);
+        g_prepared[g_preparedNext] = {t.s, t.f, t.o, view};
+        g_preparedNext = (g_preparedNext + 1) % kPrepared;
+    }
+    g_loggedApply = true;
+    static int loggedMode = -1;
+    if (loggedMode != (both ? 1 : 0)) {
+        LOG_ENGINE("stereo (%s) appliquee a la scene (contexte %p, viewport %dx%d, near %.3f, decalage oeil %.1f mm, "
+                   "thread %lu)",
+                   both ? "vraie stereo : deux yeux par image" : "rendu alterne", ctx, ctx->viewport.width,
+                   ctx->viewport.height, cam.znear,
+                   std::sqrt(local.x * local.x + local.y * local.y + local.z * local.z) * 1000.0f,
+                   GetCurrentThreadId());
+        loggedMode = both ? 1 : 0;
+    }
+}
+
 uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool arg)
 {
     if (ctx && IsMainScene(ctx)) {
@@ -338,115 +423,110 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
     const bool stereoScene = ctx && IsMainScene(ctx) && xr::GetHeadPose(head) && !MenuOpen();
     if (ctx && IsMainScene(ctx) && !stereoScene) {
         g_bodyActive = false;
+        g_indexInPair = 0; // la stéréo reprendra sur une paire neuve
         std::lock_guard lock(g_bodyMutex);
         g_haveBody = false;
     }
-    if (stereoScene) {
-        PollDebugKeys();
-        // renderHead : orientation appliquée à la caméra ; head : pose déclarée au casque
-        // Rendu alterné : un œil par frame
-        const int eyeIndex = g_nextEye;
-        g_nextEye = eyeIndex ^ 1;
-        const xr::EyeView& eye = head.eyes[eyeIndex];
-
-        // Orientation rendue et orientation déclarée au casque, selon le mode de roulis
-        const Quat eyeQ{eye.qx, eye.qy, eye.qz, eye.qw};
-        Quat renderQ = eyeQ, declaredQ = eyeQ;
-        const int mode = g_rollMode;
-        if (mode != kRollGame) {
-            Quat yawPitch, roll;
-            SplitRoll(eyeQ, yawPitch, roll);
-            renderQ = yawPitch;
-            declaredQ = mode == kRollCompositor ? yawPitch : Mul(yawPitch, Conj(roll));
+    if (!stereoScene) {
+        if (ctx && IsMainScene(ctx)) {
+            const double start = render::profile::NowMs();
+            const uintptr_t result = g_sceneRender(scene, ctx, arg);
+            render::profile::SceneFill(render::profile::NowMs() - start);
+            return result;
         }
-        xr::HeadPose renderHead = head;
-        renderHead.qx = renderQ.x, renderHead.qy = renderQ.y, renderHead.qz = renderQ.z, renderHead.qw = renderQ.w;
-
-        rgl::Camera& cam = ctx->camera;
-
-        // Cap du corps : initialisé sur celui du jeu, puis tourné au stick
-        const rgl::Transform game = cam.transform;
-        if (!g_bodyActive) {
-            g_bodyYaw = std::atan2(-game.u.y, -game.u.x);
-            g_bodyActive = true;
-            g_lastDx = g_lastDy = 0;
-        }
-        g_bodyYaw = WrapAngle(g_bodyYaw + xr::TakeTurn());
-        const float bx = -std::cos(g_bodyYaw), by = -std::sin(g_bodyYaw);
-        {
-            std::lock_guard lock(g_bodyMutex);
-            g_bodyBackX = bx, g_bodyBackY = by;
-            g_haveBody = true;
-        }
-        if (eyeIndex == 0) // une correction par paire d'images, la caméra du jeu suit
-            AimAtHand(game, bx, by);
-        ApplyHead(cam, renderHead, bx, by);
-
-        // Position de l'œil par rapport au centre de la tête, dans le repère de la tête,
-        // reportée sur les axes de la caméra (1 unité du jeu = 1 m)
-        const Quat headQ{head.qx, head.qy, head.qz, head.qw};
-        const Quat d{eye.px - head.px, eye.py - head.py, eye.pz - head.pz, 0};
-        const Quat local = Mul(Mul(Conj(headQ), d), headQ);
-        rgl::Transform& t = cam.transform;
-        t.o.x += local.x * t.s.x + local.y * t.f.x + local.z * t.u.x;
-        t.o.y += local.x * t.s.y + local.y * t.f.y + local.z * t.u.y;
-        t.o.z += local.x * t.s.z + local.y * t.f.z + local.z * t.u.z;
-
-        // Champ de vue asymétrique de l'œil (le jeu construit sa projection avec
-        // D3DXMatrixPerspectiveOffCenterRH à partir de ces valeurs). Un champ de vue
-        // symétrique englobant a été essayé pour le nom de la cible : vision double au casque.
-        if (cam.znear > 0) {
-            cam.left = cam.znear * std::tan(eye.angleLeft);
-            cam.right = cam.znear * std::tan(eye.angleRight);
-            cam.top = cam.znear * std::tan(eye.angleUp);
-            cam.bottom = cam.znear * std::tan(eye.angleDown);
-        }
-        g_computePlanes(&cam);
-
-        render::RenderView view;
-        view.valid = cam.znear > 0;
-        view.eye = eyeIndex;
-        view.qx = declaredQ.x, view.qy = declaredQ.y, view.qz = declaredQ.z, view.qw = declaredQ.w;
-        view.px = eye.px, view.py = eye.py, view.pz = eye.pz;
-        view.angleLeft = eye.angleLeft;
-        view.angleRight = eye.angleRight;
-        view.angleUp = eye.angleUp;
-        view.angleDown = eye.angleDown;
-        {
-            std::lock_guard lock(g_mutex);
-            g_prepared[g_preparedNext] = {t.s, t.f, t.o, view};
-            g_preparedNext = (g_preparedNext + 1) % kPrepared;
-        }
-        if (!g_loggedApply) {
-            LOG_ENGINE("stereo (rendu alterne) appliquee a la scene (contexte %p, viewport %dx%d, near %.3f, "
-                       "decalage oeil %.1f mm, thread %lu)",
-                       ctx, ctx->viewport.width, ctx->viewport.height, cam.znear,
-                       std::sqrt(local.x * local.x + local.y * local.y + local.z * local.z) * 1000.0f,
-                       GetCurrentThreadId());
-            g_loggedApply = true;
-        }
+        return g_sceneRender(scene, ctx, arg);
     }
-    return g_sceneRender(scene, ctx, arg);
+
+    PollDebugKeys();
+    const double start = render::profile::NowMs();
+    rgl::Camera& cam = ctx->camera;
+    const rgl::Transform game = cam.transform;
+
+    // Cap du corps : initialisé sur celui du jeu, puis tourné au stick
+    if (!g_bodyActive) {
+        g_bodyYaw = std::atan2(-game.u.y, -game.u.x);
+        g_bodyActive = true;
+        g_lastDx = g_lastDy = 0;
+    }
+    g_bodyYaw = WrapAngle(g_bodyYaw + xr::TakeTurn());
+    const float bx = -std::cos(g_bodyYaw), by = -std::sin(g_bodyYaw);
+    {
+        std::lock_guard lock(g_bodyMutex);
+        g_bodyBackX = bx, g_bodyBackY = by;
+        g_haveBody = true;
+    }
+
+    // Vraie stéréo : les deux yeux à chaque image, même pose de tête, une paire par image.
+    // Second contexte reconfiguré avant le remplissage de celui du widget (voir true_stereo).
+    rgl::RenderContext* second = stereo::Enabled() ? stereo::PrepareSecond(ctx) : nullptr;
+    if (second) {
+        g_indexInPair = 0;
+        ++g_pairId;
+        AimAtHand(game, bx, by); // appliquée par le jeu à l'image suivante, pour les deux yeux
+        PrepareEye(cam, game, head, 0, bx, by, true, ctx);
+        const uintptr_t result = g_sceneRender(scene, ctx, arg);
+        const stereo::SceneShadowState shadows = stereo::SaveSceneShadows(scene);
+        PrepareEye(second->camera, game, head, 1, bx, by, true, second);
+        g_sceneRender(scene, second, arg);
+        stereo::RestoreSceneShadows(scene, shadows);
+        render::profile::SceneFill(render::profile::NowMs() - start);
+        return result;
+    }
+
+    // Rendu alterné : un œil par image, ordre fixe dans la paire (réglage eye_order_swap).
+    // Pose de tête figée pour la paire : le second œil réutilise celle du premier, les deux
+    // images déclarent ainsi le même instant au compositeur.
+    const int inPair = g_indexInPair;
+    g_indexInPair ^= 1;
+    const bool swap = config::GetBool(config::Id::EyeOrderSwap);
+    const int eyeIndex = inPair ^ (swap ? 1 : 0);
+    if (inPair == 0) {
+        ++g_pairId;
+        g_pairHead = head;
+    } else {
+        head = g_pairHead;
+    }
+    static int loggedOrder = -1;
+    if ((swap ? 1 : 0) != loggedOrder) {
+        loggedOrder = swap ? 1 : 0;
+        LOG_ENGINE("ordre des yeux dans la paire : %s d'abord", swap ? "droit" : "gauche");
+    }
+    // Une correction de visée par paire, envoyée sur la DERNIÈRE image de la paire : le jeu
+    // l'applique à l'image suivante, donc au début de la paire suivante, pour les deux yeux
+    // à la fois (sinon petit saut de la caméra du jeu entre les deux yeux d'une paire).
+    if (inPair == 1)
+        AimAtHand(game, bx, by);
+    PrepareEye(cam, game, head, eyeIndex, bx, by, false, ctx);
+    const uintptr_t result = g_sceneRender(scene, ctx, arg);
+    render::profile::SceneFill(render::profile::NowMs() - start);
+    return result;
 }
 
 uintptr_t __fastcall HkRenderContext(void* renderer, rgl::RenderContext* ctx, bool arg)
 {
     if (ctx && IsMainScene(ctx)) {
         bool found = false;
+        render::RenderView view;
         {
             std::lock_guard lock(g_mutex);
             for (const Prepared& p : g_prepared) {
                 if (p.view.valid && SameAxis(p.s, ctx->camera.transform.s) && SameAxis(p.f, ctx->camera.transform.f) &&
                     SameAxis(p.o, ctx->camera.transform.o)) {
-                    render::SetPendingView(p.view);
-                    render::MarkStereoFrame();
+                    view = p.view;
                     found = true;
                     break;
                 }
             }
         }
+        if (found) {
+            // Vraie stéréo : à la seconde scène de l'image, le back buffer contient l'image finale
+            // de la première, copiée pour son œil
+            render::BeginMainScene(view);
+            render::SetPendingView(view);
+            render::MarkStereoFrame();
+        }
         if (found && !g_loggedPublish) {
-            LOG_ENGINE("vue du casque retrouvee au rendu (contexte %p, source %p, thread %lu)", ctx, ctx->source,
+            LOG_ENGINE("vue du casque retrouvee au rendu (contexte %p, thread %lu)", ctx,
                        GetCurrentThreadId());
             g_loggedPublish = true;
         } else if (!found && g_loggedApply && !g_loggedOverwrite && !g_cursorWasShown) {
@@ -454,12 +534,18 @@ uintptr_t __fastcall HkRenderContext(void* renderer, rgl::RenderContext* ctx, bo
             g_loggedOverwrite = true;
         }
     }
+    using render::profile::Ctx;
+    const Ctx kind = ctx && IsMainScene(ctx) ? Ctx::Scene : ctx && IsUiContext(ctx) ? Ctx::Ui : Ctx::Other;
+    render::profile::BeginContext(kind);
+    uintptr_t result;
     if (ctx && IsUiContext(ctx) && render::BeginUiRedirect()) {
-        const uintptr_t result = g_renderContext(renderer, ctx, arg);
+        result = g_renderContext(renderer, ctx, arg);
         render::EndUiRedirect();
-        return result;
+    } else {
+        result = g_renderContext(renderer, ctx, arg);
     }
-    return g_renderContext(renderer, ctx, arg);
+    render::profile::EndContext(kind);
+    return result;
 }
 
 bool Hook(void* target, void* detour, void** original, const char* name)
@@ -480,7 +566,8 @@ bool Hook(void* target, void* detour, void** original, const char* name)
 
 bool InstallCameraHook()
 {
-    void* sceneRender = pattern::Find("rglScene::render", kSceneRenderSig);
+    stereo::Init();
+    void* sceneRender = pattern::FindFirst("rglScene::render", {kSceneRenderSigJul2026, kSceneRenderSigSep2026});
     void* renderContext = pattern::Find("rglRenderer::renderContext", kRenderContextSig);
     g_computePlanes = reinterpret_cast<ComputePlanesFn>(pattern::Find("rglCamera::computePlanes", kComputePlanesSig));
     if (!sceneRender || !renderContext || !g_computePlanes) {

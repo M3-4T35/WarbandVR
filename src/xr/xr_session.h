@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 namespace xr {
 
@@ -58,6 +59,10 @@ bool IsTriggerAttackMode();
 // flèche, de la main droite vers la main gauche
 void SetDrawing(bool drawing);
 bool IsDrawing();
+// Gâchette droite tenue hors arc / armes à distance : prise de l'arme à deux mains (si l'arme
+// tenue s'y prête : skeleton_hook). Tout thread.
+void SetTwoHandGrip(bool held);
+bool IsTwoHandGrip();
 // Visée de l'arc à deux mains : corde tirée, ou moins d'une seconde après le tir
 bool IsBowAiming();
 

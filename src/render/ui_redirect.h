@@ -12,6 +12,9 @@ struct IDirect3DSurface9;
 
 namespace render {
 
+// Thread du jeu, avant Reset : libère la texture d'interface (D3DPOOL_DEFAULT), recréée ensuite
+void ReleaseUiForReset();
+
 // Device D3D9 du jeu (dernier vu dans Present), nullptr avant la première image
 void SetGameDevice(IDirect3DDevice9* device);
 IDirect3DDevice9* GameDevice();

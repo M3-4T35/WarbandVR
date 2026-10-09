@@ -88,6 +88,48 @@ void* FindGlobal(const char* name, const char* signature, int dispOffset, int in
     return reinterpret_cast<void*>(target);
 }
 
+void* FindFirst(const char* name, std::initializer_list<const char*> signatures, HMODULE module)
+{
+    if (!module)
+        module = GetModuleHandleW(nullptr);
+    const auto base = reinterpret_cast<uintptr_t>(module);
+    int variant = 0;
+    for (const char* sig : signatures) {
+        ++variant;
+        const std::vector<uint8_t*> hits = FindAll(sig, module);
+        if (hits.size() == 1) {
+            LOG_CORE("signature %s trouvee (variante %d) : exe+0x%llX", name, variant,
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(hits[0]) - base));
+            return hits[0];
+        }
+    }
+    LOG_CORE("ERREUR : signature %s introuvable (%zu variantes essayees)", name, signatures.size());
+    return nullptr;
+}
+
+uint32_t FindImm32(const char* name, const char* signature, int immOffset, HMODULE module)
+{
+    if (!module)
+        module = GetModuleHandleW(nullptr);
+    const std::vector<uint8_t*> hits = FindAll(signature, module);
+    uint32_t value = 0;
+    for (uint8_t* h : hits) {
+        uint32_t v = 0;
+        memcpy(&v, h + immOffset, sizeof(v));
+        if (value && v != value) {
+            LOG_CORE("ERREUR : constante %s : occurrences contradictoires (0x%X / 0x%X)", name, value, v);
+            return 0;
+        }
+        value = v;
+    }
+    if (!value) {
+        LOG_CORE("ERREUR : constante %s introuvable", name);
+        return 0;
+    }
+    LOG_CORE("constante %s : 0x%X (%zu occurrences concordantes)", name, value, hits.size());
+    return value;
+}
+
 void* Find(const char* name, const char* signature, HMODULE module)
 {
     if (!module)

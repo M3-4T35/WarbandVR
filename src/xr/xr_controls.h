@@ -11,6 +11,8 @@
 // Associations suggérées pour le plus de manettes possible (profil générique, Touch, Index,
 // Vive, WMR). OpenXR n'autorise qu'un attachement des jeux d'actions par session et une
 // suggestion par profil : tout est donc déclaré ici, en une fois.
+#include "xr/xr_session.h"
+
 #include <openxr/openxr.h>
 
 #include <deque>
@@ -81,8 +83,8 @@ public:
     {
         if (!heldKey_)
             return nullptr;
-        return french_ ? L"Placez le drapeau du regard — X pour valider la position"
-                       : L"Place the flag with your gaze — press X to confirm the position";
+        return french_ ? L"Placez le drapeau avec la main gauche — clic du stick gauche pour valider"
+                       : L"Place the flag with your left hand — click the left stick to confirm";
     }
 
 private:
@@ -159,13 +161,16 @@ private:
     bool haveLastHand_ = false;
     int loggedSwings_ = 0;
     bool weaponDown_ = false;
+    bool weaponLong_ = false;         // appui long déjà traité (mode de l'arme)
+    bool viewDown_ = false, viewLong_ = false; // clic du stick droit : coup de pied / vue
+    unsigned long long viewSinceMs_ = 0;
+    unsigned long long weaponSinceMs_ = 0;
     bool drawing_ = false;       // arc bandé (gâchette droite tenue après encochage)
     bool useTriggerDown_ = false;
     bool aimModeDown_ = false;
     bool shieldDown_ = false;
     bool ordersOpen_ = false; // vue stratégique ouverte par X
     bool closeDown_ = false;
-    bool menuKeysHeld_ = false; // Ctrl / Échap / rotation injectés en mode menu
     bool closeHeld_ = false;
     Radial radial_;
     int radialKeys_[9]{};
@@ -179,7 +184,9 @@ private:
     // Touches à envoyer, une à la fois (appui puis courte pause)
     std::deque<int> keyQueue_;
     int tapKey_ = 0;
-    int heldKey_ = 0; // « Tenez cette position » : F1 maintenu (drapeau) jusqu'au prochain X
+    int heldKey_ = 0; // « Tenez cette position » : F1 maintenu (drapeau) jusqu'au bouton des ordres
+    AimSource flagSavedAim_ = AimSource::Head; // réticule d'avant le placement du drapeau
+    void EndFlagPlacement();
     unsigned long long tapUntil_ = 0, gapUntil_ = 0, lastKeyMs_ = 0;
     // Dernière sélection en attente de la réponse du jeu
     bool pending_ = false;

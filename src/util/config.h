@@ -6,10 +6,13 @@
 
 namespace config {
 
+// Même ordre que la table kDefs de config.cpp (les valeurs sont rangées par position)
 enum class Id {
     // Lancement (lu par l'injecteur)
     GameDir,
     Module,
+    ShowLauncher,
+    OpenXRRuntime,
     // Affichage
     RollMode,
     ScreenDistance,
@@ -17,7 +20,8 @@ enum class Id {
     HudDistance,
     HudAngle,
     ResizeWindow,
-    OpenXRRuntime,
+    RenderScale,
+    GameFpsLimit,
     // Contrôles
     TurnSpeed,
     TurnMode,
@@ -38,10 +42,15 @@ enum class Id {
     MaxPower,
     ShieldAlwaysActive,
     ShieldRadius,
+    TorsoForward,
     BowFullDraw,
     BowMaxPrecision,
     // Avancé
     AimGain,
+    EyeOrderSwap,
+    DebugLeftImageBothEyes,
+    DebugFrameProfile,
+    TrueStereo,
     Count
 };
 
@@ -84,6 +93,24 @@ void ResetDefaults();
 std::string DefaultPath(); // warband_vr.ini à côté du module courant
 bool Load(const std::string& path);
 bool Save(const std::string& path);
+
+// --- Préréglages --------------------------------------------------------------------------
+// Un préréglage fixe tous les réglages de jeu, pas ceux du lancement (dossier du jeu, module,
+// lanceur, runtime VR) : propres à la machine, ou choisis à chaque partie.
+bool InPreset(Id id);
+// Préréglages intégrés : 0 = PCVR (valeurs par défaut), 1 = Steam Frame autonome. Choisis par
+// l'utilisateur, jamais appliqués d'office selon le casque détecté.
+int BuiltinPresetCount();
+Text BuiltinPresetName(int index);
+void ApplyBuiltinPreset(int index);
+// Préréglages de l'utilisateur : fichiers .ini ([Preset] puis les sections des réglages),
+// rangés dans warband_vr_presets à côté de warband_vr.ini, exportables n'importe où.
+std::string PresetDir(const std::string& settingsPath);
+bool SavePreset(const std::string& path);
+bool LoadPreset(const std::string& path); // réglage absent du fichier : valeur par défaut
+// Dernier préréglage appliqué ([Tool] preset), affiché par l'outil
+std::string LoadPresetName(const std::string& path);
+void SavePresetName(const std::string& path, const std::string& name);
 
 // Langue de l'outil de configuration (section [Tool] du fichier), anglais par défaut
 Lang LoadLanguage(const std::string& path);

@@ -43,17 +43,22 @@ float SwingMinDistance() { return config::Get(config::Id::SwingMinDistance); } /
 constexpr int kKeyW = 0x11, kKeyA = 0x1E, kKeyS = 0x1F, kKeyD = 0x20;
 constexpr int kKeySpace = 0x39, kKeyF = 0x21, kKeyTab = 0x0F, kKeyEscape = 0x01;
 constexpr int kKeyR = 0x13;  // vue 1re / 3e personne
+constexpr int kKeyE = 0x12;  // coup de pied
+constexpr int kKeyX = 0x2D;  // mode de l'arme (« ToggleWeaponMode » : baïonnette, une / deux mains, lance couchée)
 constexpr int kKeyCtrl = 0x1D;   // Ctrl gauche
 constexpr int kKeyNum1 = 0x4F, kKeyNum3 = 0x51; // pavé numérique : rotation de la caméra de la carte du monde
 // Menu radial : F1-F8 (ordres), 0 (toutes les troupes), 1-3 (infanterie, archers, cavalerie)
 constexpr int kOrderKeys[8] = {0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42};
 constexpr int kKeyGroupAll = 0x0B, kKeyGroup1 = 0x02, kKeyGroup2 = 0x03, kKeyGroup3 = 0x04;
+constexpr float kBladeProbe = 0.4f;     // point de la lame (m depuis la poignée) dont on mesure la vitesse
 constexpr float kRadialSelect = 0.6f;  // stick poussé au-delà : entrée visée
 constexpr float kRadialRelease = 0.3f; // retour en deçà : entrée validée
 constexpr ULONGLONG kTapMs = 80;       // durée d'appui d'une touche envoyée par le menu
 constexpr int kHoldFlag = 0x10000;     // dans la file : touche à maintenir (et non à taper)
 constexpr ULONGLONG kGapMs = 80;
 constexpr ULONGLONG kRecenterHoldMs = 800; // bouton menu tenu : recentrage (sinon Échap)
+constexpr ULONGLONG kWeaponModeHoldMs = 600; // bouton « changer d'arme » tenu : mode de l'arme
+constexpr ULONGLONG kViewHoldMs = 1000;      // clic du stick droit tenu : vue 1re / 3e personne
 constexpr float kSnapPush = 0.7f, kSnapRelease = 0.3f; // rotation par crans       // pause entre deux touches d'une séquence
 constexpr ULONGLONG kSettleMs = 200;   // après la dernière touche : le menu du jeu est à jour
 constexpr ULONGLONG kGiveUpMs = 800;   // sans réponse du jeu : on abandonne l'attente
@@ -101,13 +106,13 @@ const Profile kProfiles[] = {
      nullptr, nullptr, nullptr, nullptr, nullptr},
     {"/interaction_profiles/oculus/touch_controller", "input/trigger/value", "input/y/click", "input/b/click",
      "input/thumbstick/y", "input/thumbstick/x", "input/squeeze/value",
-     "input/thumbstick", "input/thumbstick/click", "input/menu/click", "input/y/click", "input/x/click",
+     "input/thumbstick", "input/x/click", "input/menu/click", "input/y/click", "input/thumbstick/click",
      "input/trigger/value", "input/squeeze/value",
      "input/thumbstick", "input/thumbstick/click", "input/a/click", "input/trigger/value", "input/squeeze/value",
      "input/b/click"},
     {"/interaction_profiles/valve/index_controller", "input/trigger/click", "input/b/click", "input/b/click",
      "input/thumbstick/y", "input/thumbstick/x", "input/squeeze/value",
-     "input/thumbstick", "input/thumbstick/click", nullptr, "input/b/click", "input/a/click", "input/trigger/click",
+     "input/thumbstick", "input/a/click", nullptr, "input/b/click", "input/thumbstick/click", "input/trigger/click",
      "input/squeeze/value",
      "input/thumbstick", "input/thumbstick/click", "input/a/click", "input/trigger/click", "input/squeeze/value",
      "input/b/click"},
@@ -197,7 +202,8 @@ bool XrControls::Init(XrInstance instance, XrSession session)
         makeAction(combatSet_, attack_, XR_ACTION_TYPE_BOOLEAN_INPUT, "attack", "Attaquer", false) &&
         makeAction(combatSet_, block_, XR_ACTION_TYPE_FLOAT_INPUT, "block", "Bloquer", false) &&
         makeAction(combatSet_, aimMode_, XR_ACTION_TYPE_BOOLEAN_INPUT, "aim_mode", "Source du reticule", false) &&
-        makeAction(combatSet_, view_, XR_ACTION_TYPE_BOOLEAN_INPUT, "view", "Vue 1re/3e personne", false) &&
+        makeAction(combatSet_, view_, XR_ACTION_TYPE_BOOLEAN_INPUT, "view",
+                   "Coup de pied (appui) / vue 1re-3e personne (tenu)", false) &&
         makeAction(combatSet_, use_, XR_ACTION_TYPE_FLOAT_INPUT, "use", "Utiliser", false) &&
         makeAction(combatSet_, draw_, XR_ACTION_TYPE_FLOAT_INPUT, "draw", "Bander l'arc", false) &&
         makeAction(combatSet_, weapon_, XR_ACTION_TYPE_FLOAT_INPUT, "weapon", "Changer d'arme", false) &&
@@ -306,7 +312,7 @@ void XrControls::ReleaseAll()
     input::SetPointerTarget(false, 0, 0);
     input::ReleaseAllInjected();
     tapKey_ = 0;
-    heldKey_ = 0;
+    EndFlagPlacement();
     menuButtonDown_ = menuButtonLong_ = false;
     snapLatched_ = false;
     keyQueue_.clear();
@@ -543,7 +549,20 @@ bool XrControls::UpdateSwing(XrSpace space, XrTime time, const XrPosef* head)
     lastHandTime_ = time;
     haveLastHand_ = true;
     const float speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-    SetBladeSpeed(speed);
+    // Arme toujours active : vitesse d'un point de la lame (main + rotation du poignet : les
+    // coups de poignet comptent). Lame selon -Z de la poignée (pose grip)
+    XrVector3f blade = v;
+    if (vel.velocityFlags & XR_SPACE_VELOCITY_ANGULAR_VALID_BIT) {
+        const XrQuaternionf q = loc.pose.orientation;
+        // r = q * (0, 0, -kBladeProbe)
+        const float x = q.x, y = q.y, z = q.z, w = q.w;
+        const float rx = -kBladeProbe * 2 * (x * z + w * y);
+        const float ry = -kBladeProbe * 2 * (y * z - w * x);
+        const float rz = -kBladeProbe * (1 - 2 * (x * x + y * y));
+        const XrVector3f o = vel.angularVelocity;
+        blade = {v.x + o.y * rz - o.z * ry, v.y + o.z * rx - o.x * rz, v.z + o.x * ry - o.y * rx};
+    }
+    SetBladeSpeed(std::sqrt(blade.x * blade.x + blade.y * blade.y + blade.z * blade.z));
 
     switch (swing_) {
     case Swing::Idle:
@@ -690,7 +709,10 @@ void XrControls::ProcessKeyQueue()
         if (next & kHoldFlag) {
             heldKey_ = next & 0xFF;
             input::InjectKey(heldKey_, true);
-            LOG_XR("tenez cette position : placement du drapeau (X pour valider)");
+            // Le drapeau suit la visée du jeu : réticule sur la main gauche pendant le placement
+            flagSavedAim_ = GetAimSource();
+            SetAimSource(AimSource::LeftHand);
+            LOG_XR("tenez cette position : placement du drapeau a la main gauche (clic du stick gauche pour valider)");
         } else {
             tapKey_ = next;
             input::InjectKey(tapKey_, true);
@@ -718,21 +740,31 @@ void XrControls::UpdateMenuButton(bool pressed)
     menuButtonDown_ = pressed;
 }
 
+// Fin du placement du drapeau : réticule rendu à sa source d'avant
+void XrControls::EndFlagPlacement()
+{
+    if (!heldKey_)
+        return;
+    heldKey_ = 0;
+    SetAimSource(flagSavedAim_);
+}
+
 void XrControls::UpdateRadial(bool toggle, bool back, const XrVector2f& stick)
 {
     const ULONGLONG now = GetTickCount64();
 
-    // Placement du drapeau en cours : X relâche F1, le jeu donne l'ordre à l'endroit visé
+    // Placement du drapeau en cours : le bouton des ordres relâche F1, le jeu donne l'ordre à
+    // l'endroit visé
     if (toggle && heldKey_) {
         input::InjectKey(heldKey_, false);
         LOG_XR("tenez cette position : ordre donne");
-        heldKey_ = 0;
+        EndFlagPlacement();
         return;
     }
 
     if (toggle) {
         if (radial_.open) {
-            CloseRadial("X");
+            CloseRadial("bouton des ordres");
         } else {
             radial_.open = true;
             path_.clear();
@@ -969,6 +1001,11 @@ void XrControls::UpdateCombat(XrSession session, XrSpace space, XrTime time, con
         SetSwingBusy(swing_ == Swing::Measuring || swing_ == Swing::Aiming || swing_ == Swing::Held);
     }
     useTriggerDown_ = useTrigger;
+    // Armes de mêlée : gâchette droite tenue = arme tenue à deux mains (axe des deux mains)
+    const bool twoHand = !bow && !IsTriggerAttackMode() && GetFloat(session, draw_, XR_NULL_PATH) > kActionThreshold;
+    if (twoHand != IsTwoHandGrip())
+        LOG_XR("gachette droite : prise a deux mains %s", twoHand ? "oui" : "non");
+    SetTwoHandGrip(twoHand);
     SetDrawing(drawing_);
     const bool throwHeld = IsTriggerAttackMode() && (attackButton || GetFloat(session, draw_, XR_NULL_PATH) > kActionThreshold);
     const bool attack = swingHeld || drawing_ || throwHeld || (!bow && attackButton);
@@ -991,8 +1028,23 @@ void XrControls::UpdateCombat(XrSession session, XrSpace space, XrTime time, con
         LOG_XR("reticule : %s", kNames[static_cast<int>(CycleAimSource())]);
     }
     aimModeDown_ = aimMode;
-    // R : clic du stick droit, ou touche envoyée par la file (vue 1re personne par défaut)
-    input::InjectKey(kKeyR, GetBool(session, view_, XR_NULL_PATH) || tapKey_ == kKeyR);
+    // Clic du stick droit : appui court = coup de pied (E), tenu 1 s = vue 1re / 3e personne (R)
+    const bool view = GetBool(session, view_, XR_NULL_PATH);
+    const ULONGLONG viewNow = GetTickCount64();
+    if (view && !viewDown_) {
+        viewSinceMs_ = viewNow;
+        viewLong_ = false;
+    }
+    if (view && !viewLong_ && viewNow - viewSinceMs_ >= kViewHoldMs) {
+        viewLong_ = true;
+        SendKeys({kKeyR});
+        LOG_XR("stick droit tenu : vue 1re / 3e personne (touche R)");
+    }
+    if (!view && viewDown_ && !viewLong_) {
+        SendKeys({kKeyE});
+        LOG_XR("stick droit : coup de pied (touche E)");
+    }
+    viewDown_ = view;
     // Vue 1re personne par défaut : le jeu commence la mission en 3e personne
     if (TakeFirstPersonViewRequest()) {
         SendKeys({kKeyR});
@@ -1000,10 +1052,20 @@ void XrControls::UpdateCombat(XrSession session, XrSpace space, XrTime time, con
     }
     input::InjectKey(kKeyTab, GetBool(session, tabMenu_, XR_NULL_PATH));
 
-    // Changer d'arme : un cran de molette vers le haut (« arme suivante » du jeu) à chaque
-    // pression (bouton A)
+    // Bouton A : appui court = arme suivante (un cran de molette vers le haut, au relâchement) ;
+    // appui long = mode de l'arme (touche X du jeu : baïonnette, une / deux mains, lance couchée)
     const bool weapon = GetFloat(session, weapon_, XR_NULL_PATH) > kActionThreshold;
+    const ULONGLONG weaponNow = GetTickCount64();
     if (weapon && !weaponDown_) {
+        weaponSinceMs_ = weaponNow;
+        weaponLong_ = false;
+    }
+    if (weapon && !weaponLong_ && weaponNow - weaponSinceMs_ >= kWeaponModeHoldMs) {
+        weaponLong_ = true;
+        SendKeys({kKeyX});
+        LOG_XR("A tenu : mode de l'arme (touche X)");
+    }
+    if (!weapon && weaponDown_ && !weaponLong_) {
         input::InjectMouseWheel(1);
         LOG_XR("changer d'arme (molette)");
     }

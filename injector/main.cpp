@@ -11,7 +11,14 @@
 //   --steamvr : utilise le runtime OpenXR de SteamVR pour ce lancement seulement
 //               (Steam Frame, Index...), sans changer le runtime par défaut de Windows.
 //   --runtime : idem avec le manifeste OpenXR (.json) d'un autre runtime.
+//   --wait    : reste ouvert jusqu'à la fermeture du jeu (automatique si lancé par Steam).
+//   Dossier du jeu : --game-dir, sinon le dossier du lanceur s'il contient le jeu, sinon le
+//   réglage « Dossier du jeu », sinon le dossier Steam par défaut.
 //   --default-runtime : runtime OpenXR par défaut de Windows.
+//   --launcher / --no-launcher : ouvre (ou non) le lanceur avant le jeu : warband_vr_config.exe
+//               --launcher, choix du module et des réglages, Jouer ou Quitter. Par défaut :
+//               réglage « Afficher le lanceur au démarrage », sauf si des arguments du jeu sont
+//               donnés après --.
 //   Sans ces options : réglage « Runtime VR » de warband_vr.ini (outil de configuration).
 //   Arguments du jeu par défaut : --module Native --no-intro (comme Native_WSE2.bat)
 #include "util/config.h"
@@ -21,6 +28,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <iterator>
 #include <string>
@@ -38,6 +46,24 @@ constexpr wchar_t kDefaultGameArgs[] = L"--module Native --no-intro";
 constexpr const wchar_t* kGraphicsModules[] = {L"d3d9.dll", L"d3d11.dll", L"dxgi.dll",
                                                L"opengl32.dll"};
 
+// Sorties du lanceur : console (si elle existe) et warband_vr_injector.log à côté de lui
+// (sous Proton, la console n'est pas visible)
+FILE* g_log = nullptr;
+
+void Out(FILE* stream, const wchar_t* fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    vfwprintf(stream, fmt, args);
+    va_end(args);
+    if (g_log) {
+        va_start(args, fmt);
+        vfwprintf(g_log, fmt, args);
+        va_end(args);
+        fflush(g_log);
+    }
+}
+
 void PrintLastError(const wchar_t* what)
 {
     DWORD err = GetLastError();
@@ -45,7 +71,7 @@ void PrintLastError(const wchar_t* what)
     FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                        FORMAT_MESSAGE_IGNORE_INSERTS,
                    nullptr, err, 0, reinterpret_cast<wchar_t*>(&msg), 0, nullptr);
-    fwprintf(stderr, L"[injector] ERREUR %s : %lu %s", what, err, msg ? msg : L"\n");
+    Out(stderr, L"[injector] ERREUR %s : %lu %s", what, err, msg ? msg : L"\n");
     if (msg)
         LocalFree(msg);
 }
@@ -138,14 +164,14 @@ bool InjectDll(HANDLE process, const std::wstring& dllPath)
             PrintLastError(L"CreateRemoteThread");
         } else {
             if (WaitForSingleObject(thread, 30000) != WAIT_OBJECT_0) {
-                fwprintf(stderr, L"[injector] ERREUR : LoadLibraryW distant n'a pas rendu la main en 30 s\n");
+                Out(stderr, L"[injector] ERREUR : LoadLibraryW distant n'a pas rendu la main en 30 s\n");
             } else {
                 // Le code de sortie est le HMODULE tronqué à 32 bits : on vérifie par énumération
                 DWORD exitCode = 0;
                 GetExitCodeThread(thread, &exitCode);
                 ok = exitCode != 0 || IsModuleLoaded(process, dllPath);
                 if (!ok)
-                    fwprintf(stderr, L"[injector] ERREUR : LoadLibraryW a échoué dans le jeu "
+                    Out(stderr, L"[injector] ERREUR : LoadLibraryW a échoué dans le jeu "
                                      L"(DLL introuvable, mauvaise architecture ou dépendance manquante)\n");
             }
             CloseHandle(thread);
@@ -157,12 +183,40 @@ bool InjectDll(HANDLE process, const std::wstring& dllPath)
     return ok;
 }
 
+// Lanceur : outil de configuration en mode --launcher. true si l'utilisateur a cliqué sur
+// Jouer (réglages enregistrés), false s'il a quitté. Outil absent : on continue sans lui.
+bool RunLauncher()
+{
+    const std::wstring tool = DirOfSelf() + L"\\warband_vr_config.exe";
+    if (!FileExists(tool)) {
+        Out(stderr, L"[injector] Lanceur introuvable (%s) : lancement direct\n", tool.c_str());
+        return true;
+    }
+    std::wstring cmd = L"\"" + tool + L"\" --launcher";
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(tool.c_str(), buf.data(), nullptr, nullptr, FALSE, 0, nullptr, DirOfSelf().c_str(), &si, &pi)) {
+        PrintLastError(L"CreateProcessW (lanceur)");
+        return true;
+    }
+    Out(stdout, L"[injector] Lanceur ouvert, en attente du choix\n");
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code == 0;
+}
+
 void Usage()
 {
     fwprintf(stderr,
              L"Usage : warband_vr_injector [--game-dir <dossier>] [--dll <chemin>] [--early]\n"
              L"                            [--steamvr | --runtime <json> | --default-runtime]\n"
-             L"                            [--timeout <s>] [-- <arguments du jeu>]\n"
+             L"                            [--launcher | --no-launcher]\n"
+             L"                            [--wait] [--timeout <s>] [-- <arguments du jeu>]\n"
              L"  Arguments du jeu par défaut : %s\n",
              kDefaultGameArgs);
 }
@@ -178,15 +232,17 @@ int wmain(int argc, wchar_t** argv)
     // Réglages du fichier warband_vr.ini (dossier du jeu, module, runtime), à côté de
     // l'injecteur ; la ligne de commande reste prioritaire
     config::Load(config::DefaultPath());
-    std::wstring gameDir = kDefaultGameDir;
     {
-        const std::string dir = config::GetText(config::Id::GameDir);
-        if (!dir.empty())
-            gameDir = FromAnsi(dir);
+        const std::wstring logPath = DirOfSelf() + L"\\warband_vr_injector.log";
+        if (_wfopen_s(&g_log, logPath.c_str(), L"w, ccs=UTF-8") != 0)
+            g_log = nullptr;
     }
+    std::wstring gameDir;
+    int launcher = -1; // -1 : selon le réglage, 0 / 1 : imposé en ligne de commande
     std::wstring dllPath = DirOfSelf() + L"\\" + kDllName;
     std::wstring gameArgs;
     bool early = false;
+    bool wait = false;
     bool customArgs = false;
     bool steamvr = false;
     bool runtimeChosen = false; // runtime imposé en ligne de commande
@@ -203,6 +259,8 @@ int wmain(int argc, wchar_t** argv)
             timeoutSec = static_cast<DWORD>(_wtoi(argv[++i]));
         } else if (a == L"--early") {
             early = true;
+        } else if (a == L"--wait") {
+            wait = true;
         } else if (a == L"--steamvr") {
             steamvr = runtimeChosen = true;
         } else if (a == L"--runtime" && i + 1 < argc) {
@@ -210,6 +268,10 @@ int wmain(int argc, wchar_t** argv)
             runtimeChosen = true;
         } else if (a == L"--default-runtime") {
             runtimeChosen = true;
+        } else if (a == L"--launcher") {
+            launcher = 1;
+        } else if (a == L"--no-launcher") {
+            launcher = 0;
         } else if (a == L"--") {
             customArgs = true;
             for (++i; i < argc; ++i) {
@@ -225,10 +287,30 @@ int wmain(int argc, wchar_t** argv)
             Usage();
             return 0;
         } else {
-            fwprintf(stderr, L"[injector] Argument inconnu : %s\n", a.c_str());
+            Out(stderr, L"[injector] Argument inconnu : %s\n", a.c_str());
             Usage();
             return 2;
         }
+    }
+    // Lanceur : choix du module et des réglages avant le jeu (enregistrés dans warband_vr.ini)
+    if (launcher == 1 || (launcher == -1 && !customArgs && config::GetBool(config::Id::ShowLauncher))) {
+        if (!RunLauncher()) {
+            Out(stdout, L"[injector] Lancement annulé dans le lanceur\n");
+            if (g_log)
+                fclose(g_log);
+            return 0;
+        }
+        config::Load(config::DefaultPath());
+    }
+    if (gameDir.empty()) {
+        gameDir = kDefaultGameDir;
+        const std::string dir = config::GetText(config::Id::GameDir);
+        if (!dir.empty())
+            gameDir = FromAnsi(dir);
+        // Lanceur posé dans le dossier du jeu (cas de Proton, où le jeu n'est pas dans le
+        // dossier Steam de Windows) : ce dossier l'emporte sur le réglage
+        if (FileExists(DirOfSelf() + L"\\" + kExeName))
+            gameDir = DirOfSelf();
     }
     if (!customArgs) {
         const std::string module = config::GetText(config::Id::Module);
@@ -242,11 +324,11 @@ int wmain(int argc, wchar_t** argv)
     const std::wstring exePath = gameDir + L"\\" + kExeName;
 
     if (!FileExists(exePath)) {
-        fwprintf(stderr, L"[injector] ERREUR : jeu introuvable : %s\n", exePath.c_str());
+        Out(stderr, L"[injector] ERREUR : jeu introuvable : %s\n", exePath.c_str());
         return 1;
     }
     if (!FileExists(dllPath)) {
-        fwprintf(stderr, L"[injector] ERREUR : DLL introuvable : %s\n", dllPath.c_str());
+        Out(stderr, L"[injector] ERREUR : DLL introuvable : %s\n", dllPath.c_str());
         return 1;
     }
 
@@ -256,7 +338,7 @@ int wmain(int argc, wchar_t** argv)
     if (!runtimeChosen) {
         steamvr = config::GetInt(config::Id::OpenXRRuntime) == 1;
         if (steamvr)
-            wprintf(L"[injector] Runtime VR : SteamVR (warband_vr.ini)\n");
+            Out(stdout, L"[injector] Runtime VR : SteamVR (warband_vr.ini)\n");
     }
     if (steamvr && runtimeJson.empty()) {
         // SteamVR est installé à côté du jeu (steamapps\common\SteamVR)
@@ -265,20 +347,20 @@ int wmain(int argc, wchar_t** argv)
     if (!runtimeJson.empty()) {
         runtimeJson = FullPath(runtimeJson);
         if (!FileExists(runtimeJson)) {
-            fwprintf(stderr, L"[injector] ERREUR : runtime OpenXR introuvable : %s\n", runtimeJson.c_str());
+            Out(stderr, L"[injector] ERREUR : runtime OpenXR introuvable : %s\n", runtimeJson.c_str());
             return 1;
         }
         SetEnvironmentVariableW(L"XR_RUNTIME_JSON", runtimeJson.c_str());
-        wprintf(L"[injector] OpenXR    : %s\n", runtimeJson.c_str());
+        Out(stdout, L"[injector] OpenXR    : %s\n", runtimeJson.c_str());
     } else {
-        wprintf(L"[injector] OpenXR    : runtime actif de Windows\n");
+        Out(stdout, L"[injector] OpenXR    : runtime actif de Windows\n");
     }
 
-    wprintf(L"[injector] WarbandVR %hs\n", WARBANDVR_VERSION);
-    wprintf(L"[injector] Jeu       : %s\n", exePath.c_str());
-    wprintf(L"[injector] Arguments : %s\n", gameArgs.c_str());
-    wprintf(L"[injector] DLL       : %s\n", dllPath.c_str());
-    wprintf(L"[injector] Mode      : %s\n", early ? L"précoce (processus suspendu)" : L"après init du renderer");
+    Out(stdout, L"[injector] WarbandVR %hs\n", WARBANDVR_VERSION);
+    Out(stdout, L"[injector] Jeu       : %s\n", exePath.c_str());
+    Out(stdout, L"[injector] Arguments : %s\n", gameArgs.c_str());
+    Out(stdout, L"[injector] DLL       : %s\n", dllPath.c_str());
+    Out(stdout, L"[injector] Mode      : %s\n", early ? L"précoce (processus suspendu)" : L"après init du renderer");
 
     // CreateProcessW peut modifier la ligne de commande : il lui faut un tampon modifiable
     std::wstring cmdLine = L"\"" + exePath + L"\" " + gameArgs;
@@ -292,7 +374,7 @@ int wmain(int argc, wchar_t** argv)
         PrintLastError(L"CreateProcessW");
         return 1;
     }
-    wprintf(L"[injector] Processus lancé, PID %lu\n", pi.dwProcessId);
+    Out(stdout, L"[injector] Processus lancé, PID %lu\n", pi.dwProcessId);
 
     bool ok = false;
     if (early) {
@@ -306,7 +388,7 @@ int wmain(int argc, wchar_t** argv)
             if (WaitForSingleObject(pi.hProcess, 250) == WAIT_OBJECT_0) {
                 DWORD code = 0;
                 GetExitCodeProcess(pi.hProcess, &code);
-                fwprintf(stderr, L"[injector] ERREUR : le jeu s'est fermé avant l'injection (code %lu)\n", code);
+                Out(stderr, L"[injector] ERREUR : le jeu s'est fermé avant l'injection (code %lu)\n", code);
                 break;
             }
             gfx = FindGraphicsModule(pi.hProcess);
@@ -314,21 +396,35 @@ int wmain(int argc, wchar_t** argv)
                 break;
         }
         if (!gfx.empty()) {
-            wprintf(L"[injector] Module graphique détecté : %s\n", gfx.c_str());
+            Out(stdout, L"[injector] Module graphique détecté : %s\n", gfx.c_str());
             // Laisse au jeu le temps de créer son device avant d'injecter
             WaitForInputIdle(pi.hProcess, 10000);
             ok = InjectDll(pi.hProcess, dllPath);
         } else if (WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT) {
-            fwprintf(stderr, L"[injector] Aucun module graphique après %lu s, injection quand même\n", timeoutSec);
+            Out(stderr, L"[injector] Aucun module graphique après %lu s, injection quand même\n", timeoutSec);
             ok = InjectDll(pi.hProcess, dllPath);
         }
     }
 
-    wprintf(ok ? L"[injector] Injection réussie. Log : %s\\warband_vr.log\n"
+    Out(stdout, ok ? L"[injector] Injection réussie. Log : %s\\warband_vr.log\n"
                : L"[injector] Injection échouée.\n",
             dllPath.substr(0, dllPath.find_last_of(L'\\')).c_str());
 
+    // Lancé par Steam (Proton, options de lancement) : Steam suit la partie tant que le
+    // lanceur tourne, il attend donc la fin du jeu sans qu'il faille --wait
+    wchar_t steamApp[32]{};
+    if (GetEnvironmentVariableW(L"SteamAppId", steamApp, 32) || GetEnvironmentVariableW(L"SteamGameId", steamApp, 32))
+        wait = true;
+    if (wait && WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT) {
+        Out(stdout, L"[injector] En attente de la fermeture du jeu (--wait)\n");
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        Out(stdout, L"[injector] Jeu fermé (code %lu)\n", code);
+    }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    if (g_log)
+        fclose(g_log);
     return ok ? 0 : 1;
 }

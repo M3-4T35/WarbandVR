@@ -12,6 +12,7 @@
 #include "render/d3d9_hook.h"
 #include "render/game_window.h"
 #include "util/config.h"
+#include "util/hook.h"
 #include "util/log.h"
 #include "xr/xr_session.h"
 
@@ -66,6 +67,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
         engine::RemoveCameraHook();
         input::RemovePointerHooks();
         render::RemoveD3D9Hooks();
+        hook::RemoveAll(); // tables virtuelles et d'imports (code ARM64EC)
         render::RestoreGameWindow();
     }
     return TRUE;

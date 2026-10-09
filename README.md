@@ -6,15 +6,19 @@
 
 Engine-level virtual reality mod for **Mount & Blade: Warband**. It runs on 64-bit WSE2
 (`mb_warband_wse2_x64.exe`) and makes **any module** playable in VR (Native, Viking Conquest,
-Napoleonic Wars, community mods…). VR never goes through a module's files: a DLL is injected
-into the game at launch. No game or WSE2 file is modified.
+Napoleonic Wars, community and Steam Workshop mods…). VR never goes through a module's files:
+a DLL is injected into the game at launch. No game or WSE2 file is modified.
 
-- Stereo rendering, head and hand tracking, sound in the headset.
+- Stereo rendering (alternate-eye or **true stereo**), head and hand tracking, sound in the
+  headset.
 - Physical combat with the controllers: gesture attacks, always-active blade and shield,
-  two-handed archery.
+  two-handed grip for two-handed weapons and polearms, two-handed archery.
 - Menus, world map, inventory and dialogues on a virtual screen, with a laser pointer.
 - Troop orders through a radial menu, for every module.
-- OpenXR: any headset whose OpenXR runtime is active (Meta, SteamVR…).
+- **Launcher**: module, game language, presets and every setting (VR and Warband graphics)
+  before each game.
+- OpenXR: any headset whose OpenXR runtime is active (Meta, SteamVR…), on Windows or on
+  Linux / SteamOS with Proton (including the **standalone Steam Frame**).
 
 > **Designed for single player.** Using it in public multiplayer games is not recommended: it
 > has only been tested in single player.
@@ -33,7 +37,7 @@ into the game at launch. No game or WSE2 file is modified.
 
 ## Requirements
 
-- Windows 10/11, 64-bit.
+- **Windows 10/11, 64-bit**, or **Linux / SteamOS** with Proton (Windows version of the game).
 - Mount & Blade: Warband with **WSE2** (`mb_warband_wse2_x64.exe` in the game folder).
 - A VR headset and its **OpenXR** runtime:
   - **Meta Quest** (Quest Link or Air Link): Meta Horizon / Oculus app, Meta OpenXR runtime
@@ -42,59 +46,104 @@ into the game at launch. No game or WSE2 file is modified.
 - In the game options, **attack direction: "by mouse movement"**. The mod picks the
   direction of attacks by simulating a mouse movement.
 
-Tested headsets: **Meta Quest 2** (Quest Link, 120 Hz) and **Steam Frame** (SteamVR, 90 Hz).
+Tested headsets:
+
+| Headset | Machine | Refresh rate |
+|---|---|---|
+| Meta Quest 2 | Windows PC (Quest Link) | 120 Hz |
+| Steam Frame, streamed | Windows PC (SteamVR) | 90 Hz |
+| Steam Frame, **standalone** | The headset itself (SteamOS ARM64, Proton 11) | 72 Hz |
+
 Other OpenXR headsets should work, since everything headset-specific (resolution, field of
 view, eye distance, refresh rate, audio) is read from the runtime. They are not tested.
 
 ## Installation
 
-Download `WarbandVR-vX.Y.Z.zip` from the [Releases](../../releases) page and extract it.
-Keep these three files **in the same folder**, anywhere (the game folder is not required):
+First install **WSE2** (Warband Script Enhancer 2) in the game folder, following its own
+instructions: `mb_warband_wse2_x64.exe` must be next to `mb_warband.exe`. Check that the game
+starts with WSE2 before adding WarbandVR.
+
+Then download `WarbandVR-vX.Y.Z.zip` from the [Releases](../../releases) page and extract it. It
+contains three files to keep **in the same folder**:
 
 | File | Role |
 |---|---|
-| `warband_vr_injector.exe` | Launcher: starts the game and injects the DLL |
+| `warband_vr_injector.exe` | Starts the game (after the launcher) and injects the DLL |
 | `warband_vr.dll` | The mod |
-| `warband_vr_config.exe` | Configuration tool (window) |
+| `warband_vr_config.exe` | Launcher and configuration tool (window) |
 
 The settings file `warband_vr.ini` is created in that folder at first launch, with the
 default values. The log `warband_vr.log` is written there at every session.
 
+### Windows
+
+**Recommended:** extract the three files **into the game folder**, next to
+`mb_warband_wse2_x64.exe` (by default
+`C:\Program Files (x86)\Steam\steamapps\common\MountBlade Warband`). The game is then found
+automatically. Only new files are added: no game or WSE2 file is replaced.
+
+They can also stay in any other folder: the game folder is then set in the launcher, **Launch**
+tab.
+
+At first launch, pick the **PCVR** preset in the launcher, and the **VR runtime**: *Windows
+default* for a Meta Quest through Quest Link / Air Link (with the Meta runtime active),
+*SteamVR* for a headset using SteamVR (streamed Steam Frame, Index, Vive…).
+
+### Linux / SteamOS (Proton), standalone Steam Frame
+
+1. In Steam, Warband properties → **Compatibility**: force Proton (Proton 11 ARM64 on the
+   Steam Frame). The native Linux version of the game has no WSE2: the Windows version is
+   needed.
+2. Install WSE2 in the game folder, as on Windows.
+3. Copy the three WarbandVR files **into the game folder**
+   (`~/.local/share/Steam/steamapps/common/MountBlade Warband`).
+4. Also copy `d3dx9_43.dll` and `D3DCompiler_43.dll` from a Windows installation (DirectX)
+   into the game folder. Without them, WSE2 crashes while compiling its post effects under
+   Proton.
+5. Steam launch options of the game:
+   ```
+   export WINEDLLOVERRIDES="d3dx9_43,d3dcompiler_43=n,b"; eval $(echo "%command%" | sed "s|mb_warband.exe|warband_vr_injector.exe|")
+   ```
+6. At first launch, pick the **Steam Frame (standalone)** preset in the launcher.
+
+The OpenXR runtime is Steam's (SteamVR through `wineopenxr`): keep the "VR runtime (OpenXR)"
+setting on "Windows default".
+
 ## Launching the game in VR
 
 1. Plug in and turn on the headset, then start its software (Quest Link or SteamVR). For a
-   wireless headset (Steam Frame…), connect it to the PC.
-2. Run **`warband_vr_injector.exe`**. It starts the game with the module chosen in the
-   configuration tool (Native by default) and injects the mod.
+   wireless headset (streamed Steam Frame…), connect it to the PC. Standalone, there is
+   nothing to do.
+2. Run **`warband_vr_injector.exe`** (under Proton: start the game from Steam). The
+   **launcher** opens: pick the module, the game language, a preset, adjust the settings if
+   needed, then click **PLAY**. *Quit* cancels the launch.
 3. Put the headset on: the menus appear on a virtual screen in front of you.
 
-The mod waits for the headset if it is not ready yet, so the order does not matter.
+The mod waits for the headset if it is not ready yet, so the order does not matter. To start
+without the launcher, untick **"Show the launcher at startup"** (Launch tab).
 
-### Launcher options
+### Injector options
 
 ```
 warband_vr_injector.exe [--game-dir <folder>] [--steamvr | --runtime <json> | --default-runtime]
-                        [-- <game arguments>]
+                        [--launcher | --no-launcher] [-- <game arguments>]
 ```
 
 | Option | Effect |
 |---|---|
-| `--game-dir <folder>` | Game folder, if not the default Steam one (`C:\Program Files (x86)\Steam\steamapps\common\MountBlade Warband`) |
+| `--game-dir <folder>` | Game folder. Default: the injector's folder if it contains the game, otherwise the "Game folder" setting |
 | `--steamvr` | Uses SteamVR for this launch, without changing Windows' OpenXR runtime |
 | `--runtime <json>` | Uses another runtime's OpenXR manifest |
 | `--default-runtime` | Forces Windows' OpenXR runtime |
-| `-- <arguments>` | Arguments passed to the game; default `--module <Module setting> --no-intro` |
-
-Without these options, the launcher follows the configuration tool: **"Game folder"**,
-**"Module"** and **"VR runtime (OpenXR)"**.
+| `--launcher` / `--no-launcher` | Opens (or not) the launcher, whatever the setting |
+| `-- <arguments>` | Arguments passed to the game (no launcher); default `--module <Module setting> --no-intro` |
 
 ### Playing another module
 
-Pick it in the configuration tool (**Launch → Module**, a list of the modules installed in
-the game's `Modules` folder), save, and run the launcher. **Steam Workshop** modules you are
-subscribed to also appear in the list, as `Title (Steam Workshop)`; the tool asks Steam for
-their titles (internet needed), and Steam must be running when you play them. From the
-command line:
+Pick it in the launcher (**Launch → Module**): the list holds the modules of the game's
+`Modules` folder and the **Steam Workshop** modules you are subscribed to, as
+`Title (Steam Workshop)`. The launcher asks Steam for their titles (internet needed), and Steam
+must be running when you play them. From the command line:
 
 ```
 warband_vr_injector.exe -- --module "Viking Conquest" --no-intro
@@ -102,20 +151,60 @@ warband_vr_injector.exe -- --module "Viking Conquest" --no-intro
 
 ## Configuration
 
-Run **`warband_vr_config.exe`**. It is in English by default; French can be selected at the
-top of the window. Every setting is explained in the window. The defaults are the values
-validated in the headset, and the *Defaults* button restores them. The game reloads the
-settings **live** (about 1 s): no restart needed, except for the VR runtime.
+The launcher (opened at startup) and **`warband_vr_config.exe`** (run on its own, with a
+*Save* button instead of *PLAY*) are the same window. It is drawn by the tool itself, large
+and dark-themed, to stay readable in a headset: **− / +** change the size of the interface,
+the language button switches between English and French. Lists open inside the window; point
+at a setting to see its explanation at the bottom.
 
-| Group | Setting | Default |
+The game reloads the VR settings **live** (about 1 s): no restart needed, except for the VR
+runtime. Warband graphics and the game language apply at the next launch.
+
+### Presets
+
+| Preset | Contents |
+|---|---|
+| **PCVR (default)** | VR settings validated on the Quest 2; Warband graphics on **Ultra**, without depth of field blur |
+| **Steam Frame (standalone)** | True stereo, render scale 0.85; Warband graphics on **Low**, with maximum blood (72 image pairs per second validated in the headset) |
+| Your own | *Save as…* stores them in `warband_vr_presets\` (next to the `.ini`); *Export…* writes a file anywhere; *Import…* adds one and applies it; *Delete* |
+
+Picking a preset applies it at once in the window; *PLAY* or *Save* writes it. A preset does
+not change the game folder, the module, the game language or the VR runtime. The built-in
+presets are never applied automatically: you choose.
+
+### Game graphics tab (Warband)
+
+The game's graphics settings, written to its `rgl_config.ini` file
+(`Documents\Mount&Blade Warband WSE2`); only the changed values are written. The **overall
+quality** Low / Medium / High / Ultra uses exactly the values of the presets of the game's
+video options. Then the settings one by one: shaders, textures, filtering, shadows (scene,
+characters, vegetation), grass, vegetation, character detail, HDR, exposure, depth of field,
+antialiasing, water reflections, particles, dynamic lighting, sun flare, corpses, ragdolls,
+blood, weapon trails, battle size (in troops).
+
+In VR every image is drawn twice: lower graphics give a smoother image. Close the game before
+changing these settings: it rewrites its file when it quits.
+
+### Game language
+
+Launch tab, below the module: the languages installed in the game's `languages` folder. It is
+written to `%APPDATA%\Mount&Blade Warband WSE2\language.txt` and applies at the next launch,
+for the modules that provide that language.
+
+### VR settings
+
+| Tab | Setting | Default |
 |---|---|---|
-| Launch | Game folder | `C:\Program Files (x86)\Steam\steamapps\common\MountBlade Warband` |
-| | **Module** (list of the installed modules) | Native |
+| Launch | Game folder | `C:\Program Files (x86)\Steam\steamapps\common\MountBlade Warband` (under Proton: the tool's folder) |
+| | **Module** (installed and Steam Workshop modules) | Native |
+| | Show the launcher at startup | Yes |
+| | **VR runtime (OpenXR)**: Windows default / SteamVR | Windows default |
 | Display | Roll mode (head tilt) | Inverted compositor |
 | | Virtual screen: distance / width | 2 m / 2.4 m |
 | | HUD: distance / width | 4 m / 46.9° |
 | | Game window at headset resolution | Yes |
-| | **VR runtime (OpenXR)**: Windows default / SteamVR | Windows default |
+| | **Render scale** (resolution per eye / recommended resolution) | 1 |
+| | Game frame rate limit (0 = automatic, locked to the headset) | 0 |
 | Controls | Stick turning (degrees/s) | 143 |
 | | **Stick turning mode**: smooth / snap | Smooth |
 | | Snap turning: step | 30° |
@@ -129,9 +218,12 @@ settings **live** (about 1 s): no restart needed, except for the VR runtime.
 | | Active weapon: start / end speed | 1.5 / 0.8 m/s |
 | | Power per m/s of hand / maximum power | 1 / 4 |
 | | Shield always active / protection radius | Yes / 35 cm |
+| | Torso facing forward (melee weapons) | Yes |
 | | Bow: full draw (distance between hands) | 0.5 m |
 | | Bow: maximum precision | 110 % |
 | Advanced | Aim: servo gain | 0.5 |
+| | **True stereo** (experimental) | No |
+| | Diagnostics: right eye first, left image in both eyes, frame timings in the log | No |
 
 ## Controls
 
@@ -150,7 +242,7 @@ Touch controllers, and also lets you remap the buttons.
 | Grip (either hand) | Hold Ctrl (Ctrl+click in the inventory) |
 | Menu (left), short press | Escape |
 | Menu (left), long press (~1 s) | **Recenter the view** |
-| X | Closes the order map |
+| Left stick click | Closes the order map |
 
 When the game asks for text (character name, for instance), a **virtual keyboard** appears
 under the screen, in your Windows keyboard layout.
@@ -160,10 +252,10 @@ under the screen, in your Windows keyboard layout.
 | Left hand | Action |
 |---|---|
 | Stick | Move |
-| Stick click | Crosshair source (gaze / left hand / right hand); in the radial menu: back |
+| Stick click | **Radial order menu** |
 | Trigger | Block |
 | Grip | Use (talk, open, pick up…) |
-| X | **Radial order menu** |
+| X | Crosshair source (gaze / left hand / right hand); in the radial menu: back |
 | Y | Tab menu (leave the battle…) |
 | Menu | Short press: Escape; long press: recenter |
 
@@ -171,10 +263,10 @@ under the screen, in your Windows keyboard layout.
 |---|---|
 | Stick left / right | Turn the body (smooth or snap) |
 | Stick up | Jump |
-| Stick click | First / third person view |
-| A | Next weapon |
+| Stick click | Kick (short press); first / third person view (hold 1 s) |
+| A | Next weapon (short press); weapon mode (long press: bayonet, one / two hands, couched lance..., the game's X key) |
 | B | Equip or put away the shield |
-| Trigger | Draw the bow / shoot (ranged weapons) |
+| Trigger | Draw the bow / shoot (ranged weapons); two-handed weapons and polearms: hold to **grip with both hands** |
 | Grip | Bow and ranged weapons: same as the trigger; other weapons: fallback attack |
 | **Gesture** | Melee attacks: left swing, right swing, overhead, thrust |
 
@@ -182,21 +274,22 @@ under the screen, in your Windows keyboard layout.
 
 | Weapon | How |
 |---|---|
-| Melee (sword, mace, spear…) | A quick right-hand gesture attacks in its direction. The blade is also **always active**: it hits as soon as it goes through an enemy fast enough, with a power that depends on the speed |
+| Melee (sword, mace, spear…) | A quick right-hand gesture attacks in its direction. The blade is also **always active**: it hits as soon as it goes through an enemy fast enough (once per movement), with a power that depends on the speed of the blade. The kind of blow (thrust, overhead, left or right swing) follows the real movement of the blade |
+| Two-handed sword, polearm | Same, plus: **hold the right trigger** to grip with both hands. The weapon then follows the axis of your two controllers (pointing where the right controller points), the left hand lies on the handle |
 | Shield | Follows the left hand; it blocks whatever touches it, without holding block |
 | Bow | Hold the right trigger or grip to draw, release to shoot. The arrow follows the axis of your **two hands**; the further apart they are, the more accurate the shot |
 | Crossbow, pistol, musket, throwing weapons | Hold the right trigger or grip to aim, release to shoot or throw. The crosshair automatically moves to the right hand. No gesture firing |
 
-### Radial order menu (X)
+### Radial order menu (left stick click)
 
-1. **X** opens a disc in front of your eyes; press it again to close it.
-2. **Push the left stick** towards an entry, then **release it** to confirm. **Stick
-   click**: previous level.
+1. **Clicking the left stick** opens a disc in front of your eyes; click again to close it.
+2. **Push the left stick** towards an entry, then **release it** to confirm. **X**:
+   previous level.
 3. First level: *Everyone*, *Infantry*, *Archers*, *Cavalry*, *Order map*.
 4. Next levels: **the game's own orders** (movement, formation, firing…), with its labels, in
    its language and for any module.
-5. **Hold this position**: the disc closes, the game shows its flag where you look, and **X**
-   confirms the position.
+5. **Hold this position**: the disc closes, the game shows its flag where your left hand points, and a **left
+   stick click** confirms the position.
 
 The *order map* (strategic view) only exists if the module provides it: in Native, in the
 campaign, not in custom battles.
@@ -211,81 +304,122 @@ campaign, not in custom battles.
 
 ## Features
 
-- **Stereo rendering**: each eye has its own camera (headset position and field of view),
-  with alternate-eye rendering. The game frame rate locks to the headset: two frames per
-  refresh, one per eye (180 frames/s at 90 Hz). If the PC cannot keep up, it falls back to
-  one frame per refresh.
-- **Resolution**: the game window takes the resolution recommended by the headset.
+- **Stereo rendering**, each eye with its own camera (headset position and field of view):
+  - **alternate-eye rendering** (default): one eye per game frame, two frames per headset
+    refresh, with the same head pose for both eyes of a pair;
+  - **true stereo** (*True stereo* setting): both eyes in every game frame. Simulation,
+    shadows and interface are computed once per pair: correct depth while moving, and up to
+    twice as many images when the game is CPU-limited.
+- **Frame pacing** locked to the headset: one image pair per refresh; if the machine cannot
+  keep up, one pair every 2 or 3 refreshes, with regular attempts to go back up as soon as
+  possible. The frame rate limit of the game options is ignored in VR.
+- **Resolution**: the game window takes the resolution recommended by the headset, times the
+  *render scale*.
 - **HUD** (health, ammo, names) on a head-locked plane, readable and without double vision.
 - **Menus**: fixed virtual screen, laser pointer, controllers shown in 3D, virtual keyboard.
 - **VR body**: in first person (the default view at the start of every mission), the
   character's arms follow your hands. The held weapon follows the controller's grip; ranged
-  weapons take the game's pose while aiming, shooting and reloading.
-- **Physical combat**: always-active weapon and shield, gesture attacks, power from speed,
-  servo aiming (gaze, left hand or right hand).
+  weapons take the game's pose while aiming, shooting and reloading. With a melee weapon, the
+  upper body faces forward instead of the game's side-on stances.
+- **Physical combat**: always-active weapon and shield (blow type from the blade's movement,
+  one hit per movement), two-handed grip, gesture attacks, power from the blade's speed,
+  servo aiming (gaze, left hand or right hand), kick, weapon mode (bayonet…).
 - **VR archery**: aim along the axis of both hands, accuracy from the draw length.
 - **Orders**: universal radial menu, "hold this position" with the flag.
-- **Sound**: sent to the headset's audio output, given by the runtime (Meta) or Windows'
-  default output (SteamVR).
+- **Sound**: sent to the headset's audio output, given by the runtime (Meta) or the default
+  output (SteamVR).
 - **Comfort**: recentering, smooth or snap turning.
+- **Launcher**: module (Steam Workshop included), game language, presets, VR settings and
+  Warband graphics.
 - **Robustness**: no hard-coded memory address, everything is found by signature. If a WSE2
   update breaks a signature, the related feature is disabled and the log says so, without
   crashing the game.
 
 ## Known limitations
 
-- **Two-handed weapons, polearms**: wielded with gestures, without a realistic two-handed
-  grip.
-- **Alternate-eye rendering**: each eye is refreshed every other frame. It is smooth at a
-  steady cadence, but less so than true simultaneous rendering of both eyes.
+- **Two-handed grip**: the left hand is placed on the weapon only while the right trigger is
+  held; the game still plays its own one-handed or two-handed animations for gesture attacks.
+- **True stereo**: experimental, validated on the standalone Steam Frame and on PC with the
+  streamed Steam Frame (off in the PCVR preset).
+- **Pair-based pacing and true stereo**: validated on the standalone and streamed Steam Frame;
+  not yet revalidated on the Quest 2.
 - **Crouching**: not bound (disabled in Native).
-- **Order map**: depends on the module (see above). The radial menu works everywhere.
+- **Order map**: only exists if the module provides it (in Native: in the campaign, not in
+  custom battles). The radial menu works everywhere.
+- **Linux**: tested on the standalone Steam Frame (SteamOS ARM64, Proton 11). Other Linux PCs
+  and the Steam Deck are not tested.
 - **Multiplayer**: not supported; not recommended in public multiplayer games.
-- **Linux (Proton / Wine)**: **untested**. The mod is built for Windows. Under Proton, the
-  uncertain parts are Direct3D 9 → Direct3D 11 frame sharing under DXVK and OpenXR through
-  `wineopenxr`. Feedback welcome, with the `warband_vr.log` file.
 
 ## Troubleshooting
 
-Everything is recorded in **`warband_vr.log`**, next to the DLL. Lines are prefixed by
-module (`[xr]`, `[render]`, `[engine]`, `[input]`).
+Everything is recorded in **`warband_vr.log`**, next to the DLL (written in French). Lines are
+prefixed by module (`[xr]`, `[render]`, `[engine]`, `[input]`). The injector writes
+`warband_vr_injector.log` in the same place.
 
 | Problem | What to check |
 |---|---|
 | No image in the headset | Is the headset software running? The log says "runtime OpenXR pas prêt" until the headset is connected |
 | The game starts on the wrong headset / runtime | "VR runtime (OpenXR)" setting, or the `--steamvr` / `--default-runtime` options |
 | No sound in the headset | `son :` lines in the log: list of FMOD outputs and the selected one |
-| Blurry image when turning the head | The log should say "casque à N Hz : le jeu vise 2N images/s". If the game cannot keep up, lower the graphics options |
+| Choppy image | The log shows the pacing ("une paire d'images ... par frame du casque", "le jeu ne tient pas...", "cadence remontee"). Lower the Warband graphics or the *render scale*; enable *Diagnostic: frame timings* to see what limits (game, renderer, graphics card) |
+| Blurry or pixelated image | "resolution de rendu par oeil" line in the log; *render scale* too low |
+| The launcher does not open | "Show the launcher at startup" setting, or `warband_vr_injector.exe --launcher` |
+| Empty module list | Launch tab: "Game folder"; Workshop titles need internet |
+| The game language does not change | The module must provide that language (its `languages` folder) |
 | Attacks go in the wrong direction | Game option "attack direction: by mouse movement"; *Gesture* settings |
 | A feature stopped working after a WSE2 update | Look for "signature" in the log |
 
-The log is written in French.
-
 ## Building from source
 
-You need Visual Studio 2022 (MSVC, C++20), CMake and vcpkg. Dependencies (MinHook, OpenXR
-loader) use manifest mode with the `x64-windows-static` triplet: the DLL depends on no
-third-party DLL.
+The code is C++20, built with CMake. The dependencies (MinHook, OpenXR loader) are linked
+statically, along with the CRT: the DLL depends on no third-party DLL. The three files are the
+same whatever the build machine.
+
+### On Windows (MSVC + vcpkg)
+
+You need Visual Studio 2022, CMake and vcpkg (manifest mode, `x64-windows-static` triplet).
 
 ```powershell
 cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release
 ```
 
-The three files are produced in `build/Release/`.
+The files are produced in `build/Release/`.
 
-Code layout:
+### On Linux (clang-cl cross-compilation)
+
+Works on x86_64 and ARM64 PCs, including directly on the Steam Frame (SteamOS). You need
+`clang` (clang-cl), `lld` (lld-link), `cmake`, `ninja`, `git` and `curl`.
+
+1. Once, the Windows SDK and the MSVC CRT (about 630 MB, in `~/.local/opt/winsdk`), downloaded
+   by [xwin](https://github.com/Jake-Shadle/xwin). The script accepts Microsoft's license
+   (the Visual Studio Build Tools one):
+   ```sh
+   tools/setup_linux_toolchain.sh
+   ```
+2. Build (MinHook and the OpenXR loader are downloaded and built from source, in the same
+   versions as vcpkg):
+   ```sh
+   cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=cmake/clang-cl-xwin.cmake
+   cmake --build build-linux
+   ```
+
+The files are produced in `build-linux/`. Only the Release configuration is available (the
+debug CRT is not extracted). The SDK folder can be changed with the `XWIN_DIR` variable.
+
+### Code layout
 
 | Folder | Contents |
 |---|---|
-| `injector/` | 64-bit launcher (CreateProcess + LoadLibrary injection) |
-| `src/render/` | Direct3D 9Ex hooks (PresentEx, render targets), frame sharing to D3D11, game window |
-| `src/xr/` | OpenXR session, controllers, controller rendering, virtual keyboard, radial menu |
-| `src/engine/` | Game engine: stereo camera, skeleton (VR arms), combat, orders, text input, sound, frame pacing |
+| `injector/` | 64-bit injector (launcher, CreateProcess + LoadLibrary injection) |
+| `src/render/` | Direct3D 9 hooks (Present, render targets), frame sharing to D3D11, game window, timing measurements |
+| `src/xr/` | OpenXR session, pacing, controllers, controller rendering, virtual keyboard, radial menu |
+| `src/engine/` | Game engine: stereo camera, true stereo, skeleton (VR arms), combat, orders, text input, sound, frame pacing |
 | `src/input/` | DirectInput injection (keyboard, mouse), menu pointer |
-| `src/util/` | Log, signature scanning, settings |
-| `config_tool/` | Configuration tool (Win32) |
-| `tools/` | Analysis scripts (signatures, references) |
+| `src/util/` | Log, signature scanning, settings and presets, hooks (MinHook, virtual tables) |
+| `config_tool/` | Launcher and configuration tool (GDI interface), Warband graphics and language |
+| `cmake/` | Cross-compilation from Linux (clang-cl, lld-link, xwin) |
+| `tools/` | Linux build setup, exploring the game's PDB without cdb (`pdbtool.py`), analysis scripts |
 
 ## License and credits
 

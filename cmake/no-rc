@@ -1,0 +1,4 @@
+#!/bin/sh
+# CMake exige un compilateur de ressources pour clang-cl ; le projet n'a pas de fichier .rc.
+echo "no-rc : aucun compilateur de ressources (installer llvm-rc si un .rc est ajouté)" >&2
+exit 1

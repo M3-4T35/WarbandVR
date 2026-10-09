@@ -5,9 +5,11 @@
 // dans d3d9.dll, puis on les détourne avec MinHook. Les index de vtable sont fixés par
 // l'ABI COM de d3d9.h, ils ne bougent pas avec les mises à jour de WSE2.
 #include "render/d3d9_hook.h"
+#include "render/frame_profile.h"
 #include "render/frame_share.h"
 #include "render/game_window.h"
 #include "render/ui_redirect.h"
+#include "util/hook.h"
 #include "util/log.h"
 
 #include <d3d9.h>
@@ -53,7 +55,8 @@ SwapChainPresentFn g_swapChainPresent[kVariants]{};
 PresentExFn g_presentEx = nullptr;
 ResetExFn g_resetEx = nullptr;
 
-std::vector<void*> g_targets; // fonctions effectivement détournées
+std::vector<void*> g_targets; // fonctions détournées par MinHook
+int g_hookCount = 0;          // méthodes détournées (MinHook ou table virtuelle)
 bool g_mhInitialized = false;
 
 // --- Compteur de frames -------------------------------------------------------------
@@ -101,15 +104,17 @@ void OnPresent(IDirect3DDevice9* device, const char* via)
 {
     // Le back buffer contient encore l'image finie : on la copie pour le casque (avec la
     // texture d'interface si elle a été rendue à part)
+    const double captureStart = profile::NowMs();
     SetGameDevice(device);
     CaptureFrame(device);
     EndFrame();
+    profile::Capture(profile::NowMs() - captureStart);
 
     const unsigned long long n = ++g_frames;
     const ULONGLONG now = GetTickCount64();
 
     if (device && g_lastDevice.exchange(device) != device) {
-        LOG_RENDER("premier Present sur ce device (via %s, frame %llu)", via, n);
+        LOG_RENDER("premier Present sur ce device (via %s, frame %llu, thread %lu)", via, n, GetCurrentThreadId());
         LogDeviceInfo(device);
     }
     if (n == 1) {
@@ -132,9 +137,13 @@ HRESULT STDMETHODCALLTYPE HkDevicePresent(IDirect3DDevice9* self, const RECT* sr
                                           HWND wnd, const RGNDATA* dirty)
 {
     PresentScope scope;
-    if (scope.outermost)
-        OnPresent(self, "IDirect3DDevice9::Present");
-    return g_devicePresent[V](self, src, dst, wnd, dirty);
+    if (!scope.outermost)
+        return g_devicePresent[V](self, src, dst, wnd, dirty);
+    OnPresent(self, "IDirect3DDevice9::Present");
+    profile::BeforePresent(self);
+    const HRESULT hr = g_devicePresent[V](self, src, dst, wnd, dirty);
+    profile::AfterPresent();
+    return hr;
 }
 
 template <int V>
@@ -142,23 +151,30 @@ HRESULT STDMETHODCALLTYPE HkSwapChainPresent(IDirect3DSwapChain9* self, const RE
                                              HWND wnd, const RGNDATA* dirty, DWORD flags)
 {
     PresentScope scope;
-    if (scope.outermost) {
-        IDirect3DDevice9* device = nullptr;
-        self->GetDevice(&device);
-        OnPresent(device, "IDirect3DSwapChain9::Present");
-        if (device)
-            device->Release();
-    }
-    return g_swapChainPresent[V](self, src, dst, wnd, dirty, flags);
+    if (!scope.outermost)
+        return g_swapChainPresent[V](self, src, dst, wnd, dirty, flags);
+    IDirect3DDevice9* device = nullptr;
+    self->GetDevice(&device);
+    OnPresent(device, "IDirect3DSwapChain9::Present");
+    profile::BeforePresent(device);
+    if (device)
+        device->Release();
+    const HRESULT hr = g_swapChainPresent[V](self, src, dst, wnd, dirty, flags);
+    profile::AfterPresent();
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE HkPresentEx(IDirect3DDevice9Ex* self, const RECT* src, const RECT* dst, HWND wnd,
                                       const RGNDATA* dirty, DWORD flags)
 {
     PresentScope scope;
-    if (scope.outermost)
-        OnPresent(self, "IDirect3DDevice9Ex::PresentEx");
-    return g_presentEx(self, src, dst, wnd, dirty, flags);
+    if (!scope.outermost)
+        return g_presentEx(self, src, dst, wnd, dirty, flags);
+    OnPresent(self, "IDirect3DDevice9Ex::PresentEx");
+    profile::BeforePresent(self);
+    const HRESULT hr = g_presentEx(self, src, dst, wnd, dirty, flags);
+    profile::AfterPresent();
+    return hr;
 }
 
 template <int V>
@@ -181,6 +197,11 @@ HRESULT STDMETHODCALLTYPE HkDeviceReset(IDirect3DDevice9* self, D3DPRESENT_PARAM
 {
     LOG_RENDER("Reset (%s) : %ux%u, %s", kVariantName[V], pp ? pp->BackBufferWidth : 0,
                pp ? pp->BackBufferHeight : 0, pp && pp->Windowed ? "fenetre" : "plein ecran");
+    // Ressources D3DPOOL_DEFAULT à nous libérées avant : sinon Reset échoue sur un device
+    // D3D9 classique (cas de Proton / DXVK)
+    ReleaseForReset();
+    ReleaseUiForReset();
+    profile::ReleaseForReset();
     const HRESULT hr = g_deviceReset[V](self, pp);
     LOG_RENDER("Reset -> 0x%08lX", static_cast<unsigned long>(hr));
     return hr;
@@ -189,6 +210,9 @@ HRESULT STDMETHODCALLTYPE HkDeviceReset(IDirect3DDevice9* self, D3DPRESENT_PARAM
 HRESULT STDMETHODCALLTYPE HkResetEx(IDirect3DDevice9Ex* self, D3DPRESENT_PARAMETERS* pp, D3DDISPLAYMODEEX* mode)
 {
     LOG_RENDER("ResetEx : %ux%u", pp ? pp->BackBufferWidth : 0, pp ? pp->BackBufferHeight : 0);
+    ReleaseForReset();
+    ReleaseUiForReset();
+    profile::ReleaseForReset();
     const HRESULT hr = g_resetEx(self, pp, mode);
     LOG_RENDER("ResetEx -> 0x%08lX", static_cast<unsigned long>(hr));
     return hr;
@@ -196,39 +220,15 @@ HRESULT STDMETHODCALLTYPE HkResetEx(IDirect3DDevice9Ex* self, D3DPRESENT_PARAMET
 
 // --- Installation -------------------------------------------------------------------
 
-void* VtableEntry(void* object, int index)
-{
-    return (*reinterpret_cast<void***>(object))[index];
-}
-
-bool AlreadyHooked(void* target)
-{
-    for (void* t : g_targets)
-        if (t == target)
-            return true;
-    return false;
-}
-
-// Détourne target sauf s'il l'est déjà (fonction partagée entre D3D9 et D3D9Ex)
+// Détourne la méthode index de l'objet (MinHook, ou table virtuelle si son code est ARM64EC :
+// DXVK de Proton sur ARM). Une méthode partagée entre D3D9 et D3D9Ex n'est détournée qu'une fois.
 template <typename Fn>
-bool Hook(void* target, void* detour, Fn* original, const char* name)
+bool Hook(void* object, int index, Fn detour, Fn* original, const char* name)
 {
-    if (!target)
+    if (!hook::HookMethod(object, index, reinterpret_cast<void*>(detour), reinterpret_cast<void**>(original), name,
+                          "[render]", g_targets))
         return false;
-    if (AlreadyHooked(target)) {
-        LOG_RENDER("  %-32s %p (deja detourne, partage)", name, target);
-        return true;
-    }
-    MH_STATUS st = MH_CreateHook(target, detour, reinterpret_cast<void**>(original));
-    if (st == MH_OK)
-        st = MH_EnableHook(target);
-    if (st != MH_OK) {
-        LOG_RENDER("  %-32s %p ECHEC MinHook : %s", name, target, MH_StatusToString(st));
-        MH_RemoveHook(target);
-        return false;
-    }
-    g_targets.push_back(target);
-    LOG_RENDER("  %-32s %p detourne", name, target);
+    ++g_hookCount;
     return true;
 }
 
@@ -262,18 +262,18 @@ template <int V>
 int HookDevice(IDirect3DDevice9* device)
 {
     int ok = 0;
-    ok += Hook(VtableEntry(device, kDevicePresent), &HkDevicePresent<V>, &g_devicePresent[V],
+    ok += Hook(device, kDevicePresent, &HkDevicePresent<V>, &g_devicePresent[V],
                V ? "IDirect3DDevice9Ex::Present" : "IDirect3DDevice9::Present");
-    ok += Hook(VtableEntry(device, kDeviceReset), &HkDeviceReset<V>, &g_deviceReset[V],
+    ok += Hook(device, kDeviceReset, &HkDeviceReset<V>, &g_deviceReset[V],
                V ? "IDirect3DDevice9Ex::Reset" : "IDirect3DDevice9::Reset");
-    ok += Hook(VtableEntry(device, kDeviceSetRenderTarget), &HkSetRenderTarget<V>, &g_setRenderTarget[V],
+    ok += Hook(device, kDeviceSetRenderTarget, &HkSetRenderTarget<V>, &g_setRenderTarget[V],
                V ? "IDirect3DDevice9Ex::SetRenderTarget" : "IDirect3DDevice9::SetRenderTarget");
-    ok += Hook(VtableEntry(device, kDeviceShowCursor), &HkShowCursor<V>, &g_showCursor[V],
+    ok += Hook(device, kDeviceShowCursor, &HkShowCursor<V>, &g_showCursor[V],
                V ? "IDirect3DDevice9Ex::ShowCursor" : "IDirect3DDevice9::ShowCursor");
 
     IDirect3DSwapChain9* sc = nullptr;
     if (SUCCEEDED(device->GetSwapChain(0, &sc)) && sc) {
-        ok += Hook(VtableEntry(sc, kSwapChainPresent), &HkSwapChainPresent<V>, &g_swapChainPresent[V],
+        ok += Hook(sc, kSwapChainPresent, &HkSwapChainPresent<V>, &g_swapChainPresent[V],
                    V ? "IDirect3DSwapChain9(Ex)::Present" : "IDirect3DSwapChain9::Present");
         sc->Release();
     }
@@ -350,9 +350,9 @@ bool InstallD3D9Hooks()
         if (SUCCEEDED(hr) && dev) {
             LOG_RENDER("device factice D3D9Ex cree, installation des hooks :");
             hooked += HookDevice<1>(dev);
-            hooked += Hook(VtableEntry(dev, kDeviceExPresentEx), &HkPresentEx, &g_presentEx,
+            hooked += Hook(dev, kDeviceExPresentEx, &HkPresentEx, &g_presentEx,
                            "IDirect3DDevice9Ex::PresentEx");
-            hooked += Hook(VtableEntry(dev, kDeviceExResetEx), &HkResetEx, &g_resetEx,
+            hooked += Hook(dev, kDeviceExResetEx, &HkResetEx, &g_resetEx,
                            "IDirect3DDevice9Ex::ResetEx");
             dev->Release();
         } else {
@@ -365,12 +365,17 @@ bool InstallD3D9Hooks()
 
     DestroyWindow(wnd);
 
-    if (g_targets.empty()) {
+    if (!g_hookCount) {
         LOG_RENDER("ERREUR : aucun hook installe (%d tentatives reussies), rendu non intercepte", hooked);
         return false;
     }
-    LOG_RENDER("%zu fonction(s) detournee(s), en attente du premier Present du jeu", g_targets.size());
+    LOG_RENDER("%d methode(s) detournee(s), en attente du premier Present du jeu", g_hookCount);
     return true;
+}
+
+unsigned long long PresentCount()
+{
+    return g_frames;
 }
 
 int GameCursorState()

@@ -18,6 +18,7 @@ struct Slot {
     IDirect3DQuery9* query = nullptr; // signale la fin de la copie côté GPU
     HANDLE shared = nullptr;
     bool pending = false;             // copie soumise, pas encore terminée
+    bool reading = false;             // en cours de lecture par le thread XR (copie GPU D3D11)
     uint64_t seq = 0;                 // numéro de la copie (pour trouver la plus récente)
     RenderView view;
 };
@@ -30,9 +31,11 @@ UINT g_height = 0;
 uint64_t g_generation = 0;
 uint64_t g_seq = 0;
 int g_latest[kCategories] = {-1, -1, -1, -1}; // dernière copie terminée par catégorie (eye + 1)
-int g_reading = -1;                        // slot en cours de lecture par le thread XR
 bool g_disabled = false;
 RenderView g_pendingView;
+int g_frameMainScenes = 0;   // scènes principales rendues depuis le dernier Present
+RenderView g_firstMainView;  // vue de la première
+bool g_loggedFirstEye = false;
 std::atomic<bool> g_dumpRequested{false};
 int g_dumpCount = 0;
 
@@ -86,6 +89,14 @@ void DestroySlots()
         l = -1;
 }
 
+bool AnyReading()
+{
+    for (const Slot& s : g_slots)
+        if (s.reading)
+            return true;
+    return false;
+}
+
 int Category(const RenderView& v)
 {
     return v.eye >= 0 && v.eye <= kEyeUi ? v.eye + 1 : 0;
@@ -126,9 +137,10 @@ bool CreateSlots(IDirect3DDevice9* device, UINT w, UINT h)
 void CopyToFreeSlot(IDirect3DDevice9* device, IDirect3DSurface9* source, const RenderView& view)
 {
     int target = -1;
-    for (int i = 0; i < kSharedSlots && target == -1; ++i)
-        if (!IsLatest(i) && i != g_reading && !g_slots[i].pending)
-            target = i;
+    for (int i = 0; i < kSharedSlots; ++i)
+        if (!IsLatest(i) && !g_slots[i].reading && !g_slots[i].pending &&
+            (target == -1 || g_slots[i].seq < g_slots[target].seq))
+            target = i; // le plus ancien : la paire précédente reste disponible pour le casque
     if (target == -1)
         return;
     Slot& s = g_slots[target];
@@ -140,13 +152,54 @@ void CopyToFreeSlot(IDirect3DDevice9* device, IDirect3DSurface9* source, const R
     }
 }
 
+// Copies terminées côté GPU -> la plus récente de sa catégorie devient disponible
+void UpdateCompleted()
+{
+    for (int i = 0; i < kSharedSlots; ++i) {
+        Slot& s = g_slots[i];
+        if (s.pending && s.query->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_OK) {
+            s.pending = false;
+            int& latest = g_latest[Category(s.view)];
+            if (latest == -1 || s.seq > g_slots[latest].seq)
+                latest = i;
+        }
+    }
+}
+
 } // namespace
+
+void BeginMainScene(const RenderView& view)
+{
+    std::lock_guard lock(g_mutex);
+    if (view.both && g_frameMainScenes == 1 && g_firstMainView.both && g_firstMainView.pair == view.pair &&
+        g_owner && !g_disabled && g_slots[0].texture) {
+        IDirect3DSurface9* backBuffer = nullptr;
+        if (SUCCEEDED(g_owner->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) && backBuffer) {
+            D3DSURFACE_DESC desc{};
+            backBuffer->GetDesc(&desc);
+            if (desc.Width == g_width && desc.Height == g_height) {
+                UpdateCompleted();
+                CopyToFreeSlot(g_owner, backBuffer, g_firstMainView);
+                if (!g_loggedFirstEye) {
+                    LOG_RENDER("vraie stereo : image de l'oeil %s copiee avant le rendu de l'oeil %s (paire %llu)",
+                               g_firstMainView.eye ? "droit" : "gauche", view.eye ? "droit" : "gauche",
+                               static_cast<unsigned long long>(view.pair));
+                    g_loggedFirstEye = true;
+                }
+            }
+            backBuffer->Release();
+        }
+    }
+    g_firstMainView = view;
+    ++g_frameMainScenes;
+}
 
 void CaptureFrame(IDirect3DDevice9* device)
 {
     if (!device)
         return;
     std::lock_guard lock(g_mutex);
+    g_frameMainScenes = 0; // image suivante
     if (g_disabled)
         return;
 
@@ -159,7 +212,7 @@ void CaptureFrame(IDirect3DDevice9* device)
     // (Re)création si nouveau device ou nouvelle taille. On attend que le thread XR ait
     // fini de lire pour ne pas détruire une texture qu'il utilise.
     if (device != g_owner || desc.Width != g_width || desc.Height != g_height) {
-        if (g_reading != -1) {
+        if (AnyReading()) {
             backBuffer->Release();
             return;
         }
@@ -179,34 +232,62 @@ void CaptureFrame(IDirect3DDevice9* device)
                    desc.Height, g_generation);
     }
 
-    // Copies terminées côté GPU -> la plus récente de sa catégorie devient disponible
-    for (int i = 0; i < kSharedSlots; ++i) {
-        Slot& s = g_slots[i];
-        if (s.pending && s.query->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_OK) {
-            s.pending = false;
-            int& latest = g_latest[Category(s.view)];
-            if (latest == -1 || s.seq > g_slots[latest].seq)
-                latest = i;
-        }
-    }
-
+    UpdateCompleted();
     CopyToFreeSlot(device, backBuffer, g_pendingView);
-    // Interface : seulement celle des frames de l'œil gauche. Les éléments placés d'après la
-    // caméra (noms au-dessus des alliés) changeraient sinon de position d'une frame à
-    // l'autre et apparaîtraient en double.
+    // Interface : rendu alterné, seulement celle des frames de l'œil gauche. Les éléments placés
+    // d'après la caméra (noms au-dessus des alliés) changeraient sinon de position d'une frame
+    // à l'autre et apparaîtraient en double. Vraie stéréo : une seule interface par image.
     IDirect3DSurface9* ui = UiSurfaceForFrame();
-    if (ui && g_pendingView.eye == 0 && g_dumpRequested.exchange(false)) {
+    const bool uiFrame = g_pendingView.eye == 0 || g_pendingView.both;
+    if (ui && uiFrame && g_dumpRequested.exchange(false)) {
         DumpSurface(device, backBuffer, "scene_oeil_gauche");
         DumpSurface(device, ui, "interface");
         ++g_dumpCount;
     }
-    if (ui && g_pendingView.eye == 0) {
+    if (ui && uiFrame) {
         RenderView uiView;
         uiView.eye = kEyeUi;
         CopyToFreeSlot(device, ui, uiView);
     }
     g_pendingView = RenderView{};
     backBuffer->Release();
+}
+
+void ReleaseForReset()
+{
+    // Le thread XR peut être en train de lire un slot : on attend (au plus 1 s) qu'il ait fini
+    const ULONGLONG deadline = GetTickCount64() + 1000;
+    for (;;) {
+        {
+            std::lock_guard lock(g_mutex);
+            if (!AnyReading() || GetTickCount64() > deadline) {
+                if (g_owner)
+                    LOG_RENDER("Reset : textures partagees liberees%s", AnyReading() ? " (lecture XR en cours)" : "");
+                DestroySlots();
+                g_owner = nullptr;
+                g_width = g_height = 0;
+                return;
+            }
+        }
+        Sleep(1);
+    }
+}
+
+uint64_t LatestCompletePair()
+{
+    std::lock_guard lock(g_mutex);
+    uint64_t best = 0;
+    for (const Slot& a : g_slots) {
+        // Œil gauche terminé ; un œil droit terminé de la même paire ?
+        if (!a.texture || a.pending || !a.seq || Category(a.view) != 1 || a.view.pair <= best)
+            continue;
+        for (const Slot& b : g_slots)
+            if (b.texture && !b.pending && b.seq && Category(b.view) == 2 && b.view.pair == a.view.pair) {
+                best = a.view.pair;
+                break;
+            }
+    }
+    return best;
 }
 
 void SetPendingView(const RenderView& view)
@@ -222,13 +303,20 @@ void LatestSeqs(uint64_t out[kCategories])
         out[c] = g_latest[c] == -1 ? 0 : g_slots[g_latest[c]].seq;
 }
 
-bool AcquireLatestFrame(int eye, uint64_t newerThan, SharedFrame& out)
+bool AcquireLatestFrame(int eye, uint64_t newerThan, SharedFrame& out, uint64_t maxPair)
 {
     std::lock_guard lock(g_mutex);
-    const int slot = g_latest[eye + 1];
+    // Image terminée la plus récente de cet œil, dans une paire complète (<= maxPair)
+    int slot = -1;
+    for (int i = 0; i < kSharedSlots; ++i) {
+        const Slot& s = g_slots[i];
+        if (s.texture && !s.pending && s.seq && Category(s.view) == eye + 1 && s.view.pair <= maxPair &&
+            (slot == -1 || s.seq > g_slots[slot].seq))
+            slot = i;
+    }
     if (slot == -1 || g_slots[slot].seq <= newerThan)
         return false;
-    g_reading = slot;
+    g_slots[slot].reading = true;
     out.handle = g_slots[slot].shared;
     out.slot = slot;
     out.width = g_width;
@@ -244,10 +332,11 @@ void RequestDump()
     g_dumpRequested = true;
 }
 
-void ReleaseFrame()
+void ReleaseFrame(int slot)
 {
     std::lock_guard lock(g_mutex);
-    g_reading = -1;
+    if (slot >= 0 && slot < kSharedSlots)
+        g_slots[slot].reading = false;
 }
 
 } // namespace render

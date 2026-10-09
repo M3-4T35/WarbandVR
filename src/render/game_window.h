@@ -12,7 +12,8 @@ HWND GameWindow();
 
 // Redimensionne la zone cliente de la fenêtre du jeu (appelable depuis n'importe quel
 // thread). Lève la limite de taille de Windows (taille de l'écran) si nécessaire.
-void ResizeGameWindow(UINT clientWidth, UINT clientHeight);
+// Renvoie false si la fenêtre du jeu n'est pas encore connue (à retenter).
+bool ResizeGameWindow(UINT clientWidth, UINT clientHeight);
 
 // Met la fenêtre du jeu au premier plan : DirectInput ne donne la souris au jeu que s'il a
 // le focus. Renvoie true si le jeu est au premier plan.

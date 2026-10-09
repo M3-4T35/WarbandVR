@@ -1,7 +1,11 @@
 build/
+build-*/
 wse/
 *.log
 capture_*.png
 capture_*.bmp
 CLAUDE.md
 dist/
+tools/.pdbtool_cache.json
+tools/.pdbtool_types.txt
+tools/__pycache__/

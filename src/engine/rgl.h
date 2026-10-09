@@ -34,29 +34,56 @@ struct Viewport {
     float zMin, zMax;
 };
 
+// rglRenderContext : début commun aux versions de WSE2 (la fin varie : 0x310 octets en
+// juillet 2026, 0x350 en septembre ; m_source à 0x308 / 0x348, offset lu dans le code).
+// Les rglVector du moteur font 3 pointeurs (début, fin, capacité) : ne jamais les modifier
+// nous-mêmes (allocateur du jeu), passer par ses fonctions. Jamais alloué ni copié par nous.
 struct RenderContext {
-    void* renderTarget;            // +0x000 rglTexture*
-    uint8_t pad0[0x60 - 0x08];
+    void* renderTarget;             // +0x000 rglTexture* (nul : back buffer)
+    void* depthOfFieldRenderTarget; // +0x008
+    void* postFxMsRenderTarget;     // +0x010
+    void* postFxMsDepthStencil;     // +0x018
+    void* postFxNodes[3];           // +0x020 rglVector<rglPostFxNode*>, lus sur le contexte source
+    void* activeRenderTarget;       // +0x038 cible de la scène (HDR), lue sur le contexte source
+    void* waterReflectionRenderTarget; // +0x040
+    void* waterReflectionDepthStencil; // +0x048
+    void* activeDepthStencil;       // +0x050
+    int32_t cubeRenderTargetFace;   // +0x058
+    bool postFxEnabled;             // +0x05C
     RenderContext* waterReflection; // +0x060
     uint8_t pad1[0x70 - 0x68];
-    Viewport viewport;             // +0x070
-    Camera camera;                 // +0x088
+    Viewport viewport;              // +0x070
+    Camera camera;                  // +0x088
     uint8_t pad2[0x1B2 - 0x1AC];
-    bool isFinalRender;            // +0x1B2
+    bool isFinalRender;             // +0x1B2
     uint8_t pad3[0x1E4 - 0x1B3];
-    uint32_t flags;                // +0x1E4
-    uint8_t pad4[0x248 - 0x1E8];
-    void* scene;                   // +0x248 rglScene*
-    uint8_t pad5[0x308 - 0x250];
-    RenderContext* source;         // +0x308
+    uint32_t flags;                 // +0x1E4
+    uint8_t pad4[0x218 - 0x1E8];
+    bool queuedForRendering;        // +0x218 posé par rglRenderer::addContext
+    uint8_t pad5[0x221 - 0x219];
+    bool entityDegradingEnabled;    // +0x221
+    uint8_t pad6[0x230 - 0x222];
+    void* renderMeshes[3];          // +0x230 rglVector<rglRenderMesh*> rempli par rglScene::render
+    void* scene;                    // +0x248 rglScene*
 };
+static_assert(offsetof(RenderContext, postFxNodes) == 0x20);
+static_assert(offsetof(RenderContext, activeRenderTarget) == 0x38);
+static_assert(offsetof(RenderContext, activeDepthStencil) == 0x50);
+static_assert(offsetof(RenderContext, postFxEnabled) == 0x5C);
 static_assert(offsetof(RenderContext, waterReflection) == 0x60);
 static_assert(offsetof(RenderContext, viewport) == 0x70);
 static_assert(offsetof(RenderContext, camera) == 0x88);
 static_assert(offsetof(RenderContext, isFinalRender) == 0x1B2);
 static_assert(offsetof(RenderContext, flags) == 0x1E4);
+static_assert(offsetof(RenderContext, queuedForRendering) == 0x218);
+static_assert(offsetof(RenderContext, entityDegradingEnabled) == 0x221);
+static_assert(offsetof(RenderContext, renderMeshes) == 0x230);
 static_assert(offsetof(RenderContext, scene) == 0x248);
-static_assert(offsetof(RenderContext, source) == 0x308);
+
+// rglScene : adaptation des ombres factices des personnages. rglScene::render ajuste la portée
+// d'après le nombre compté au rendu précédent, puis remet le compteur à zéro.
+constexpr size_t kSceneNumCharacterShadows = 0x180;   // int
+constexpr size_t kSceneCharacterShadowsRange = 0x184; // float
 
 // Chaîne du moteur (rglString)
 struct String {

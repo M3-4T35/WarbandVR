@@ -1,0 +1,3 @@
+#!/bin/sh
+# Remplaçant de lib.exe / llvm-lib : lld-link fait l'archiveur quand /lib est son premier argument.
+exec lld-link /lib "$@"

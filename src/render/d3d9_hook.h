@@ -13,4 +13,7 @@ void RemoveD3D9Hooks();
 // 0 masqué (combat), -1 si le jeu ne l'a encore jamais piloté
 int GameCursorState();
 
+// Images présentées par le jeu depuis le démarrage (tout thread)
+unsigned long long PresentCount();
+
 } // namespace render

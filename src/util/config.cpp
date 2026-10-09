@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <string>
 
@@ -36,6 +37,18 @@ const Definition kDefs[kCount] = {
       "Module lance par le lanceur : nom de son dossier dans Modules, ou \"<titre> (Steam Workshop)\" pour un "
       "module du Steam Workshop (Steam doit etre lance)."},
      "Native"},
+    {"Launch", "show_launcher", kLaunch, {"Show the launcher at startup", "Afficher le lanceur au demarrage"},
+     Kind::Bool, 1, 0, 1, kNone,
+     {"When the game is started (Steam or warband_vr_injector), this window opens first to choose the module "
+      "and settings. Off: the game starts directly.",
+      "Au lancement du jeu (Steam ou warband_vr_injector), cette fenetre s'ouvre d'abord pour choisir le module "
+      "et les reglages. Desactive : le jeu demarre directement."}},
+    {"Launch", "openxr_runtime", kLaunch, {"VR runtime (OpenXR)", "Runtime VR (OpenXR)"}, Kind::Choice, 0, 0, 1,
+     {"Windows default|SteamVR", "Par defaut de Windows|SteamVR"},
+     {"Runtime used by the launcher. SteamVR: Steam Frame, Index, Vive... Windows default: the one set in "
+      "Windows (e.g. Meta for Quest Link). Applies at the next launch.",
+      "Runtime utilise par le lanceur. SteamVR : Steam Frame, Index, Vive... Par defaut : celui de Windows "
+      "(ex. Meta pour Quest Link). Pris en compte au prochain lancement."}},
     // Affichage
     {"Display", "roll_mode", kDisplay, {"Roll mode (head tilt)", "Mode de roulis (tete inclinee)"}, Kind::Choice, 0,
      0, 2, {"Inverted compositor|Compositor|Game", "Compositeur inverse|Compositeur|Jeu"},
@@ -58,12 +71,17 @@ const Definition kDefs[kCount] = {
      {"Game window at headset resolution", "Fenetre du jeu a la resolution du casque"}, Kind::Bool, 1, 0, 1, kNone,
      {"When the VR session starts, the game window takes the resolution recommended by the headset.",
       "Au demarrage de la session VR, la fenetre prend la resolution recommandee par le casque."}},
-    {"Display", "openxr_runtime", kDisplay, {"VR runtime (OpenXR)", "Runtime VR (OpenXR)"}, Kind::Choice, 0, 0, 1,
-     {"Windows default|SteamVR", "Par defaut de Windows|SteamVR"},
-     {"Runtime used by the launcher. SteamVR: Steam Frame, Index, Vive... Windows default: the one set in "
-      "Windows (e.g. Meta for Quest Link). Applies at the next launch.",
-      "Runtime utilise par le lanceur. SteamVR : Steam Frame, Index, Vive... Par defaut : celui de Windows "
-      "(ex. Meta pour Quest Link). Pris en compte au prochain lancement."}},
+    {"Display", "render_scale", kDisplay, {"Render scale", "Echelle de rendu"}, Kind::Float, 1.0f, 0.5f, 1.5f, kNone,
+     {"Resolution of each eye relative to the one recommended by the headset. Lower: lighter for the GPU, "
+      "less sharp. Applied immediately (the game resizes its window).",
+      "Resolution de chaque oeil par rapport a celle recommandee par le casque. Plus bas : plus leger pour la "
+      "carte graphique, moins net. Applique tout de suite (le jeu redimensionne sa fenetre)."}},
+    {"Display", "game_fps_limit", kDisplay, {"Game frame rate limit (0 = auto)", "Limite d'images du jeu (0 = auto)"},
+     Kind::Float, 0.0f, 0.0f, 500.0f, kNone,
+     {"0: automatic, a steady rate locked to the headset (2, 1 or 2/3 images per refresh, whichever the PC "
+      "sustains). Otherwise: fixed limit in images per second.",
+      "0 : automatique, cadence reguliere calee sur le casque (2, 1 ou 2/3 images par rafraichissement, selon "
+      "ce que le PC tient). Sinon : limite fixe en images par seconde."}},
     // Contrôles
     {"Controls", "turn_speed", kControls, {"Stick turning (degrees/s)", "Rotation au stick (degres/s)"}, Kind::Float,
      143.0f, 10.0f, 720.0f, kNone,
@@ -128,6 +146,11 @@ const Definition kDefs[kCount] = {
      Kind::Float, 0.35f, 0.1f, 1.0f, kNone,
      {"Distance from the shield centre within which a hit is blocked.",
       "Distance au centre du bouclier en deca de laquelle un coup est pare."}},
+    {"Combat", "torso_forward", kCombat, {"Torso facing forward", "Torse de face"}, Kind::Bool, 1, 0, 1, kNone,
+     {"With a melee weapon, the upper body faces where the character looks, instead of the game's side-on "
+      "stances.",
+      "Avec une arme de melee, le haut du corps fait face a la direction du personnage, au lieu des postures "
+      "de profil du jeu."}},
     {"Combat", "bow_full_draw", kCombat, {"Bow: full draw (m between hands)", "Arc : allonge complete (m entre les mains)"},
      Kind::Float, 0.5f, 0.2f, 1.2f, kNone,
      {"Hands this far apart while drawing: best accuracy. Closer hands: less accurate.",
@@ -141,6 +164,27 @@ const Definition kDefs[kCount] = {
      0.05f, 1.0f, kNone,
      {"Share of the aim error corrected each frame. Higher: snappier, may oscillate.",
       "Part de l'ecart de visee corrigee a chaque image. Plus haut : plus vif, risque d'oscillation."}},
+    {"Advanced", "eye_order_swap", kAdvanced, {"Render the right eye first", "Rendre l'oeil droit en premier"},
+     Kind::Bool, 0, 0, 1, kNone,
+     {"Alternate-eye rendering: order of the two eyes in each headset frame (diagnostic).",
+      "Rendu alterne : ordre des deux yeux dans chaque frame du casque (diagnostic)."}},
+    {"Advanced", "debug_left_image_both_eyes", kAdvanced,
+     {"Diagnostic: left image in both eyes", "Diagnostic : image gauche dans les deux yeux"}, Kind::Bool, 0, 0, 1,
+     kNone,
+     {"Shows the left eye image to both eyes (no depth). To tell a rendering issue from a display one.",
+      "Montre l'image de l'oeil gauche aux deux yeux (sans relief). Pour distinguer un probleme de rendu "
+      "d'un probleme d'affichage."}},
+    {"Advanced", "debug_frame_profile", kAdvanced,
+     {"Diagnostic: frame timings in the log", "Diagnostic : temps par image dans le log"}, Kind::Bool, 0, 0, 1,
+     kNone,
+     {"Every 10 s, writes to warband_vr.log the time spent per frame by the game, the renderer and the GPU.",
+      "Toutes les 10 s, ecrit dans warband_vr.log le temps passe par image par le jeu, le rendu et le GPU."}},
+    {"Advanced", "true_stereo", kAdvanced,
+     {"True stereo (experimental)", "Vraie stereo (experimental)"}, Kind::Bool, 0, 0, 1, kNone,
+     {"Renders both eyes in every game frame instead of one eye per frame: correct depth while moving and up "
+      "to twice the image rate when the game is CPU-limited. Off: alternate-eye rendering.",
+      "Rend les deux yeux a chaque image du jeu au lieu d'un oeil par image : relief juste en mouvement et "
+      "jusqu'a deux fois plus d'images quand le jeu est limite par le processeur. Desactive : rendu alterne."}},
 };
 
 std::atomic<float> g_values[kCount];
@@ -169,6 +213,86 @@ bool LastWrite(const std::string& path, FILETIME& out)
 struct Defaults {
     Defaults() { ResetDefaults(); }
 } g_defaults;
+
+// Préréglages intégrés : écarts par rapport aux valeurs par défaut (validées au Quest 2 en PCVR)
+struct PresetValue {
+    Id id;
+    float value;
+};
+// Validé au casque sur le Steam Frame autonome (Proton, Adreno 750, 72 Hz), graphismes du jeu au
+// minimum : vraie stéréo à 72 paires/s avec ~28 % de pixels en moins
+constexpr PresetValue kSteamFrameValues[] = {{Id::TrueStereo, 1}, {Id::RenderScale, 0.85f}};
+
+struct BuiltinPreset {
+    Text name;
+    const PresetValue* values;
+    size_t count;
+};
+const BuiltinPreset kBuiltinPresets[] = {
+    {{"PCVR (default)", "PCVR (defaut)"}, nullptr, 0},
+    {{"Steam Frame (standalone)", "Steam Frame (autonome)"}, kSteamFrameValues, std::size(kSteamFrameValues)},
+};
+
+void WriteEntry(FILE* f, int i)
+{
+    const Definition& d = kDefs[i];
+    fprintf(f, "; %s", d.help.en);
+    if (d.kind == Kind::Text) {
+        fprintf(f, "\n%s=%s\n", d.key, GetText(static_cast<Id>(i)).c_str());
+        return;
+    }
+    if (d.kind == Kind::Bool)
+        fprintf(f, " (0 = no, 1 = yes)");
+    else if (d.kind == Kind::Choice)
+        fprintf(f, " (%s: 0, 1, 2...)", d.choices.en);
+    else
+        fprintf(f, " (%g to %g)", d.minValue, d.maxValue);
+    fprintf(f, "\n%s=%g\n", d.key, g_values[i].load());
+}
+
+// Réglages du fichier ; presetOnly : seulement ceux d'un préréglage
+void WriteEntries(FILE* f, bool presetOnly)
+{
+    const char* section = nullptr;
+    for (int i = 0; i < kCount; ++i) {
+        if (presetOnly && !InPreset(static_cast<Id>(i)))
+            continue;
+        if (!section || strcmp(section, kDefs[i].section) != 0) {
+            fprintf(f, "\n[%s]\n", kDefs[i].section);
+            section = kDefs[i].section;
+        }
+        WriteEntry(f, i);
+    }
+}
+
+bool ReadEntries(const std::string& path, bool presetOnly)
+{
+    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+        return false;
+    for (int i = 0; i < kCount; ++i) {
+        if (presetOnly && !InPreset(static_cast<Id>(i)))
+            continue;
+        if (kDefs[i].kind == Kind::Text) {
+            char text[1024]{};
+            GetPrivateProfileStringA(kDefs[i].section, kDefs[i].key, "", text, sizeof(text), path.c_str());
+            SetText(static_cast<Id>(i), text[0] ? text : kDefs[i].defaultText);
+            continue;
+        }
+        char buf[64]{};
+        GetPrivateProfileStringA(kDefs[i].section, kDefs[i].key, "", buf, sizeof(buf), path.c_str());
+        // openxr_runtime était autrefois dans [Display] : valeur des anciens fichiers reprise
+        if (!buf[0] && static_cast<Id>(i) == Id::OpenXRRuntime)
+            GetPrivateProfileStringA("Display", kDefs[i].key, "", buf, sizeof(buf), path.c_str());
+        if (!buf[0]) {
+            g_values[i] = kDefs[i].defaultValue;
+            continue;
+        }
+        char* end = nullptr;
+        const float v = strtof(buf, &end);
+        g_values[i] = end != buf ? Clamp(static_cast<Id>(i), v) : kDefs[i].defaultValue;
+    }
+    return true;
+}
 
 } // namespace
 
@@ -231,60 +355,83 @@ std::string DefaultPath()
 
 bool Load(const std::string& path)
 {
-    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
-        return false;
-    for (int i = 0; i < kCount; ++i) {
-        if (kDefs[i].kind == Kind::Text) {
-            char text[1024]{};
-            GetPrivateProfileStringA(kDefs[i].section, kDefs[i].key, "", text, sizeof(text), path.c_str());
-            SetText(static_cast<Id>(i), text[0] ? text : kDefs[i].defaultText);
-            continue;
-        }
-        char buf[64]{};
-        GetPrivateProfileStringA(kDefs[i].section, kDefs[i].key, "", buf, sizeof(buf), path.c_str());
-        if (!buf[0]) {
-            g_values[i] = kDefs[i].defaultValue;
-            continue;
-        }
-        char* end = nullptr;
-        const float v = strtof(buf, &end);
-        g_values[i] = end != buf ? Clamp(static_cast<Id>(i), v) : kDefs[i].defaultValue;
-    }
-    return true;
+    return ReadEntries(path, false);
 }
 
 bool Save(const std::string& path)
 {
-    const Lang lang = LoadLanguage(path); // conservée à la réécriture
+    const Lang lang = LoadLanguage(path); // conservés à la réécriture
+    const std::string preset = LoadPresetName(path);
     FILE* f = nullptr;
     if (fopen_s(&f, path.c_str(), "w") != 0 || !f)
         return false;
     fprintf(f, "; WarbandVR settings. Edit with warband_vr_config.exe or by hand.\n");
     fprintf(f, "; The game reloads this file as soon as it changes.\n");
-    const char* section = nullptr;
-    for (int i = 0; i < kCount; ++i) {
-        const Definition& d = kDefs[i];
-        if (!section || strcmp(section, d.section) != 0) {
-            fprintf(f, "\n[%s]\n", d.section);
-            section = d.section;
-        }
-        fprintf(f, "; %s", d.help.en);
-        if (d.kind == Kind::Text) {
-            fprintf(f, "\n%s=%s\n", d.key, GetText(static_cast<Id>(i)).c_str());
-            continue;
-        }
-        if (d.kind == Kind::Bool)
-            fprintf(f, " (0 = no, 1 = yes)");
-        else if (d.kind == Kind::Choice)
-            fprintf(f, " (%s: 0, 1, 2...)", d.choices.en);
-        else
-            fprintf(f, " (%g to %g)", d.minValue, d.maxValue);
-        fprintf(f, "\n%s=%g\n", d.key, g_values[i].load());
-    }
+    WriteEntries(f, false);
     fprintf(f, "\n[Tool]\n; Configuration tool language (0 = English, 1 = French)\nlanguage=%d\n",
             lang == Lang::French ? 1 : 0);
+    fprintf(f, "; Last preset applied in the configuration tool\npreset=%s\n", preset.c_str());
     fclose(f);
     return true;
+}
+
+bool InPreset(Id id)
+{
+    return strcmp(Def(id).section, "Launch") != 0;
+}
+
+int BuiltinPresetCount()
+{
+    return static_cast<int>(std::size(kBuiltinPresets));
+}
+
+Text BuiltinPresetName(int index)
+{
+    return kBuiltinPresets[index].name;
+}
+
+void ApplyBuiltinPreset(int index)
+{
+    for (int i = 0; i < kCount; ++i)
+        if (InPreset(static_cast<Id>(i)) && kDefs[i].kind != Kind::Text)
+            g_values[i] = kDefs[i].defaultValue;
+    const BuiltinPreset& p = kBuiltinPresets[index];
+    for (size_t i = 0; i < p.count; ++i)
+        Set(p.values[i].id, p.values[i].value);
+}
+
+std::string PresetDir(const std::string& settingsPath)
+{
+    return settingsPath.substr(0, settingsPath.find_last_of('\\') + 1) + "warband_vr_presets";
+}
+
+bool SavePreset(const std::string& path)
+{
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), "w") != 0 || !f)
+        return false;
+    fprintf(f, "; WarbandVR preset (game settings only: not the game folder, module or VR runtime).\n");
+    fprintf(f, "; Import it with warband_vr_config.exe.\n\n[Preset]\nversion=%s\n", WARBANDVR_VERSION);
+    WriteEntries(f, true);
+    fclose(f);
+    return true;
+}
+
+bool LoadPreset(const std::string& path)
+{
+    return ReadEntries(path, true);
+}
+
+std::string LoadPresetName(const std::string& path)
+{
+    char buf[256]{};
+    GetPrivateProfileStringA("Tool", "preset", "", buf, sizeof(buf), path.c_str());
+    return buf;
+}
+
+void SavePresetName(const std::string& path, const std::string& name)
+{
+    WritePrivateProfileStringA("Tool", "preset", name.c_str(), path.c_str());
 }
 
 Lang LoadLanguage(const std::string& path)

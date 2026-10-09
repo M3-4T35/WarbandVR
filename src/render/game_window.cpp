@@ -39,20 +39,18 @@ HWND GameWindow()
     return g_window;
 }
 
-void ResizeGameWindow(UINT clientWidth, UINT clientHeight)
+bool ResizeGameWindow(UINT clientWidth, UINT clientHeight)
 {
     HWND hwnd = g_window;
-    if (!hwnd || !IsWindow(hwnd)) {
-        LOG_RENDER("redimensionnement impossible : fenetre du jeu inconnue");
-        return;
-    }
+    if (!hwnd || !IsWindow(hwnd))
+        return false;
     RECT client{};
     GetClientRect(hwnd, &client);
     if (static_cast<UINT>(client.right) == clientWidth && static_cast<UINT>(client.bottom) == clientHeight)
-        return;
+        return true;
     if (IsZoomed(hwnd)) {
         LOG_RENDER("fenetre du jeu maximisee : pas de redimensionnement");
-        return;
+        return true;
     }
 
     const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE));
@@ -79,6 +77,7 @@ void ResizeGameWindow(UINT clientWidth, UINT clientHeight)
     // Messages postés : le thread XR n'attend pas le Reset du device.
     PostMessageW(hwnd, WM_ENTERSIZEMOVE, 0, 0);
     PostMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
+    return true;
 }
 
 bool BringGameToFront()

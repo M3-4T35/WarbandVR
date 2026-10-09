@@ -25,6 +25,8 @@ constexpr int kCategories = 4;
 struct RenderView {
     bool valid = false;
     int eye = kEyeFlat;
+    uint64_t pair = 0;                    // paire stéréo (gauche + droite), attribuée par la caméra
+    bool both = false;                    // vraie stéréo : les deux yeux rendus dans la même image du jeu
     float qx = 0, qy = 0, qz = 0, qw = 1; // orientation déclarée (espace LOCAL d'OpenXR)
     float px = 0, py = 0, pz = 0;         // position de l'œil (espace LOCAL)
     float angleLeft = 0, angleRight = 0, angleUp = 0, angleDown = 0; // radians
@@ -48,14 +50,30 @@ void SetPendingView(const RenderView& view);
 // a été rendue à part (appelé avant le Present d'origine)
 void CaptureFrame(IDirect3DDevice9* device);
 
+// Thread de rendu du jeu, au début du rendu d'une scène principale (vue retrouvée). Vraie
+// stéréo : à la seconde scène de l'image, le back buffer contient l'image finale (post-effets
+// compris) de la première, copiée pour son œil. La seconde est copiée au Present.
+void BeginMainScene(const RenderView& view);
+
 // Thread XR : numéro de la dernière image terminée de chaque catégorie (0 = aucune),
 // indexé par eye + 1
 void LatestSeqs(uint64_t out[kCategories]);
 
 // Thread XR : réserve la dernière image terminée de la catégorie eye si elle est plus
-// récente que newerThan. Doit être suivi de ReleaseFrame() une fois la lecture GPU terminée.
-bool AcquireLatestFrame(int eye, uint64_t newerThan, SharedFrame& out);
-void ReleaseFrame();
+// récente que newerThan. Doit être suivi de ReleaseFrame(slot) une fois la lecture GPU terminée
+// (plusieurs slots peuvent être en lecture en même temps : un par œil, l'interface).
+// maxPair : n'accepter que les images des paires stéréo <= maxPair ; UINT64_MAX = pas de contrainte.
+bool AcquireLatestFrame(int eye, uint64_t newerThan, SharedFrame& out, uint64_t maxPair = UINT64_MAX);
+
+// Paire stéréo la plus récente dont l'œil gauche ET l'œil droit sont terminés ; 0 si aucune
+uint64_t LatestCompletePair();
+
+void ReleaseFrame(int slot);
+
+// Thread du jeu, avant IDirect3DDevice9::Reset : libère les textures partagées (D3DPOOL_DEFAULT).
+// Un device D3D9 classique (Proton) refuse Reset tant qu'elles existent ; D3D9Ex l'accepte.
+// Elles sont recréées à l'image suivante.
+void ReleaseForReset();
 
 // Debug (touche F11) : à la prochaine frame de l'œil gauche, enregistre l'image de la scène
 // et la texture d'interface en PNG à côté de la DLL

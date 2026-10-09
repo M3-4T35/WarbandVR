@@ -12,6 +12,7 @@
 // coup et on appelle checkAttackCollision à chaque frame : le jeu balaie la vraie lame (os
 // de l'arme = bras VR) et applique ses propres dégâts, qui dépendent de la vitesse de l'arme.
 #include "engine/combat_hook.h"
+#include "engine/camera_hook.h"
 #include "engine/skeleton_hook.h"
 #include "engine/rgl.h"
 #include "util/config.h"
@@ -34,6 +35,8 @@ namespace engine {
 namespace {
 
 std::atomic<bool> g_rangedAiming{false}; // arme à distance en main, en visée ou en tir
+std::atomic<bool> g_meleeHeld{false};    // arme de mêlée en main droite
+std::atomic<bool> g_twoHandedHeld{false}; // arme à deux mains ou d'hast en main droite
 constexpr int kAgentInaccuracy = 0x9140;    // mbAgent::m_inaccuracy (taille du réticule, dispersion)
 
 // Tir à l'arc VR : la précision dépend de l'écart des mains, pas du temps de visée. Bornes
@@ -94,17 +97,20 @@ xr::AimSource g_savedAimSource = xr::AimSource::Head;
 
 // mbMission::updateCamera commence par charger g_mission : mov rbx, [rip+disp32] à +0x17
 constexpr char kUpdateCameraSig[] =
-    "48 8B C4 48 89 78 18 55 48 8D 68 A1 48 81 EC ?? ?? ?? ?? 48 89 58 08 48 8B 1D ?? ?? ?? ?? 48 89 70 10";
+    "48 8B C4 48 89 78 18 55 48 8D 68 ?? 48 81 EC ?? ?? ?? ?? 48 89 58 08 48 8B 1D ?? ?? ?? ?? "
+    "48 89 70 10 0F 29 70 E8 0F 29 78 D8 44 0F 29 40 C8";
 constexpr int kMissionLoadOffset = 0x17;
-constexpr char kUpdateMeleeSig[] = "48 8B C4 55 53 41 54 41 55 41 56 48 8D A8 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? "
-                                   "0F 29 70 B8 44 0F 29 40 98 44 0F 29 48 88";
+constexpr char kUpdateMeleeSig[] =
+    "48 8B C4 55 53 41 54 41 ?? 41 ?? 48 8D A8 ?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? 0F 29 ?? ?? "
+    "44 0F 29 40 98 44 0F 29 48 88 44 0F 29 90 78 FF FF FF 44 0F 29 98 68 FF FF FF";
 // Chargement de g_itemKinds (tableau des sortes d'objets) : mov rax, [rip+disp32]
 constexpr char kItemKindsLoadSig[] =
     "48 8B 05 ?? ?? ?? ?? 48 8B CA 48 69 C9 50 07 00 00 8B 8C 01 C0 06 00 00 48 0F BA E1 1D";
 constexpr char kCheckDefendSig[] = "48 8B C4 44 89 40 18 89 50 10 48 89 48 08 55 56 57 41 54 41 55 41 56 41 57 48 8D A8 "
                                    "?? ?? ?? ?? 48 81 EC ?? ?? ?? ?? 48 C7 45 10 FE FF FF FF 48 89 58 20";
 // mbAgent::updateAccuracy : imprécision de visée de l'agent (m_inaccuracy), lissée à chaque frame
-constexpr char kUpdateAccuracySig[] = "4C 8B DC 55 53 49 8D 6B E8 48 81 EC 08 01 00 00 48 63 91 98 0A 00 00";
+constexpr char kUpdateAccuracySig[] =
+    "4C 8B DC 55 53 49 8D 6B ?? 48 81 EC ?? ?? 00 00 48 63 91 98 0A 00 00";
 constexpr char kCheckAttackSig[] = "4C 89 4C 24 20 4C 89 44 24 18 89 54 24 10 48 89 4C 24 08 55 53 56 57 41 54 41 55 "
                                    "41 56 41 57 48 8D AC 24 ?? ?? ?? ?? B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 2B E0 48 C7 85";
 
@@ -115,7 +121,10 @@ constexpr int kAgentAttack = 0x1B8;         // mbAgent : mbAttack
 constexpr int kAgentAttackPhase = 0x90F4;   // mbAgent : phase d'attaque (2 = coup en cours)
 constexpr float kSentinel = -20000000.0f;   // pose d'arme « aucune » (début de balayage)
 constexpr int kMissionAgentBlocks = 0x28;   // mbMission::m_agents (+0x08) : table des blocs de 16 agents
-constexpr int kAgentSize = 0x9630;
+uint32_t g_agentSize = 0;                   // taille de mbAgent (0x9630 en juillet 2026, 0x9640 en septembre)
+// mov rax, [r9+28h] (blocs de 16 agents de la mission) ; mov ecx, r8d ; and ecx, 0Fh ;
+// imul rcx, rcx, taille : la taille de mbAgent est lue dans le code, elle change avec WSE2
+constexpr char kAgentSizeSig[] = "49 8B 41 28 41 8B C8 83 E1 0F 48 69 C9 ?? ?? ?? ??";
 constexpr int kAgentValid = 0x08;
 constexpr int kAgentItems = 0xA3C;          // mbAgent::m_items[10] (mbItem : sorte, drapeaux)
 constexpr int kAgentWielded = 0xA98;        // mbAgent::m_wieldedItems[2] (main droite, gauche)
@@ -217,6 +226,39 @@ float MaxPower() { return config::Get(config::Id::MaxPower); }
 bool g_f10Down = false;
 unsigned long long g_playerMeleeCalls = 0, g_lastMeleeLog = 0;
 bool g_swinging = false;
+bool g_swingHit = false; // le mouvement en cours a déjà touché : plus de balayage jusqu'au suivant
+
+// Type d'attaque (mbAttack::m_type) : 0 estoc, 1 taille par la droite, 2 par la gauche, 3 par le
+// haut. mbMission::calculateDamage prend les dégâts d'estoc (perçants) pour le type 0 : il doit
+// suivre le vrai mouvement de la lame, sinon une taille est comptée comme un estoc (dégâts
+// presque nuls quand la lame avance de travers).
+constexpr int kAttackThrust = 0, kAttackRight = 1, kAttackLeft = 2, kAttackOverhead = 3;
+constexpr float kBladeProbe = 0.5f; // point de la lame suivi (m depuis la poignée)
+
+int AttackTypeFromMotion(const rgl::Transform& prev, const rgl::Transform& cur, int fallback)
+{
+    auto point = [](const rgl::Transform& t) {
+        return rgl::Vector4{t.o.x + t.f.x * kBladeProbe, t.o.y + t.f.y * kBladeProbe, t.o.z + t.f.z * kBladeProbe, 0};
+    };
+    const rgl::Vector4 a = point(prev), b = point(cur);
+    const float dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const float flen = std::sqrt(cur.f.x * cur.f.x + cur.f.y * cur.f.y + cur.f.z * cur.f.z);
+    if (len < 0.005f || flen < 1e-4f)
+        return fallback;
+    // La lame avance dans son axe : estoc
+    if ((dx * cur.f.x + dy * cur.f.y + dz * cur.f.z) / (len * flen) > 0.7f)
+        return kAttackThrust;
+    // Elle descend : coup par le haut
+    if (dz / len < -0.6f)
+        return kAttackOverhead;
+    // Sinon taille : vers la gauche du joueur = coup venant de la droite
+    rgl::Vector4 back;
+    if (!GetBodyBack(back))
+        return fallback == kAttackThrust ? kAttackRight : fallback;
+    const float rightX = -back.y, rightY = back.x; // avant = -arrière, droite = avant x haut
+    return dx * rightX + dy * rightY < 0 ? kAttackRight : kAttackLeft;
+}
 // Arme tenue par le joueur, lue à chaque frame dans son agent
 struct Weapon {
     int32_t item[2]{-1, 0}; // mbItem passé au jeu : sorte (usage alternatif compris), drapeaux
@@ -270,7 +312,9 @@ uint8_t* PlayerAgent()
     auto** blocks = *reinterpret_cast<uint8_t***>(mission + kMissionAgentBlocks);
     if (no < 0 || !blocks || !blocks[no >> 4])
         return nullptr;
-    uint8_t* agent = blocks[no >> 4] + (no & 15) * kAgentSize;
+    if (!g_agentSize)
+        return nullptr;
+    uint8_t* agent = blocks[no >> 4] + (no & 15) * g_agentSize;
     if (!*reinterpret_cast<int32_t*>(agent + kAgentValid) || *reinterpret_cast<int32_t*>(agent + kAgentNo) != no)
         return nullptr;
     return agent;
@@ -346,7 +390,7 @@ bool PlayerHasShield()
 // Début d'un balayage, comme le jeu en début de coup (mbAttack::clear + poses sentinelles)
 void StartSweep(Attack* a)
 {
-    a->type = 0;
+    a->type = kAttackRight;
     a->power = 1.0f;
     a->hitAgent = a->hitHorse = a->hitMissionObject = false;
     a->crushthrough = a->blocked = false;
@@ -389,15 +433,23 @@ uintptr_t __fastcall HkUpdateMelee(uint8_t* agent, float dt)
     const float speed = xr::GetBladeSpeed();
     if (!g_swinging && speed >= ActiveStartSpeed()) {
         g_swinging = true;
+        g_swingHit = false;
         StartSweep(attack);
     } else if (g_swinging && speed < ActiveEndSpeed()) {
         g_swinging = false;
+        g_swingHit = false;
         StartSweep(attack); // prêt pour le prochain mouvement
         return result;
     }
-    if (!g_swinging)
+    // Un seul coup par mouvement, comme une attaque du jeu : sinon la lame qui traverse le corps
+    // touche à chaque image, en petits coups presque sans dégâts
+    if (!g_swinging || g_swingHit)
         return result;
     attack->power = std::min(MaxPower(), std::max(1.0f, speed * PowerPerSpeed()));
+    // Direction du coup d'après le dernier déplacement de la lame (le jeu recopie cur dans prev
+    // au début de l'appel : ce sont les poses de l'image précédente)
+    if (attack->prevSword.o.x > kSentinel / 2 && attack->curSword.o.x > kSentinel / 2)
+        attack->type = AttackTypeFromMotion(attack->prevSword, attack->curSword, attack->type);
 
     alignas(16) uint8_t blow[0x200]{};
     float out = 0;
@@ -405,17 +457,31 @@ uintptr_t __fastcall HkUpdateMelee(uint8_t* agent, float dt)
     uint8_t* mission = g_mission ? *g_mission : nullptr;
     const int hit = g_checkAttack(mission, *reinterpret_cast<int32_t*>(agent + kAgentNo), item, nullptr,
                                   reinterpret_cast<Blow*>(blow), attack, &out);
+    if (hit != 0)
+        g_swingHit = true;
     if (hit != 0 && g_loggedActive < 40) {
         ++g_loggedActive;
+        static const char* const kTypes[] = {"estoc", "taille droite", "taille gauche", "par le haut"};
         const Blow* b = reinterpret_cast<const Blow*>(blow);
-        LOG_ENGINE("arme active : resultat %d, agent %d os %d, degats bruts %.1f infliges %.1f (main %.1f m/s, "
+        LOG_ENGINE("arme active : resultat %d, agent %d os %d, %s, degats bruts %.1f infliges %.1f (lame %.1f m/s, "
                    "puissance %.1f)",
-                   hit, b->agentNo, b->boneNo, b->rawDamage, b->inflictedDamage, speed, attack->power);
+                   hit, b->agentNo, b->boneNo, attack->type >= 0 && attack->type < 4 ? kTypes[attack->type] : "?",
+                   b->rawDamage, b->inflictedDamage, speed, attack->power);
     }
     return result;
 }
 
 } // namespace
+
+bool PlayerHoldsTwoHandedWeapon()
+{
+    return g_twoHandedHeld;
+}
+
+bool PlayerHoldsMeleeWeapon()
+{
+    return g_meleeHeld;
+}
 
 bool PlayerAimingRangedWeapon()
 {
@@ -427,6 +493,8 @@ void UpdatePlayerWeapon()
     const uint8_t* agent = PlayerAgent();
     const Weapon w = agent ? ReadWeapon(agent) : Weapon{};
     g_weapon = w;
+    g_meleeHeld = w.item[0] >= 0 && IsMelee(w.type);
+    g_twoHandedHeld = w.item[0] >= 0 && (w.type == kTypeTwoHanded || w.type == kTypePolearm);
     // Nouvel agent du joueur (début de mission) en vue 3e personne : passer en 1re personne,
     // une fois ; le joueur reste libre de rechanger (clic du stick droit)
     if (agent && agent != g_viewAgent) {
@@ -493,6 +561,7 @@ bool InstallCombatHook()
     memcpy(&disp, load + 3, sizeof(disp));
     g_mission = reinterpret_cast<uint8_t**>(const_cast<uint8_t*>(load + 7 + disp));
     g_itemKinds = static_cast<uint8_t**>(pattern::FindGlobal("g_itemKinds", kItemKindsLoadSig, 3, 7));
+    g_agentSize = pattern::FindImm32("taille de mbAgent", kAgentSizeSig, 13);
     g_game = static_cast<uint8_t**>(pattern::FindGlobal("g_game", kGameCameraModeSig, 3, 7));
     LOG_ENGINE("g_mission : exe+0x%llX",
                static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(g_mission) -

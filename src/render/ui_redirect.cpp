@@ -60,6 +60,13 @@ bool EnsureUiTarget(IDirect3DDevice9* device, IDirect3DSurface9* like)
 
 } // namespace
 
+void ReleaseUiForReset()
+{
+    if (g_uiTexture)
+        LOG_RENDER("Reset : texture d'interface liberee");
+    ReleaseUiTarget();
+}
+
 void SetGameDevice(IDirect3DDevice9* device)
 {
     g_gameDevice = device;

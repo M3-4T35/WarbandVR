@@ -18,6 +18,7 @@
 #include "engine/camera_hook.h"
 #include "engine/combat_hook.h"
 #include "engine/rgl.h"
+#include "util/config.h"
 #include "util/log.h"
 #include "util/pattern.h"
 #include "xr/xr_session.h"
@@ -25,6 +26,7 @@
 #include <MinHook.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
@@ -320,6 +322,122 @@ void SolveArm(rgl::Skeleton* sk, int upper, const xr::HandPose& hand, const XrTo
     up.skinningNeedsUpdate = fore.skinningNeedsUpdate = hnd.skinningNeedsUpdate = item.skinningNeedsUpdate = true;
 }
 
+// Haut du corps de face : les postures du jeu (garde, repos, arc...) tournent le torse de
+// profil. On fait pivoter la colonne et tout ce qui en dépend (thorax, tête, bras) autour de la
+// verticale de la colonne, pour que la ligne des épaules soit perpendiculaire à l'avant du
+// personnage (+y ; droite = +x, haut = +z). Avant la cinématique inverse des bras.
+constexpr int kBoneSpine = 7;
+bool g_loggedTorso = false;
+
+void StraightenTorso(rgl::Skeleton* sk)
+{
+    rgl::Bone* b = sk->bones;
+    const V across = Sub(b[rgl::kBoneUpperArmR].transform.o, b[rgl::kBoneUpperArmL].transform.o);
+    if (across.x * across.x + across.y * across.y < 0.01f)
+        return;
+    const float yaw = std::atan2(across.y, across.x); // 0 : épaules de face
+    if (std::fabs(yaw) < 0.01f || std::fabs(yaw) > 1.5f)
+        return; // déjà de face, ou squelette inattendu
+    const V axis{0, 0, 1, 0};
+    const float c = std::cos(-yaw), sn = std::sin(-yaw);
+    const V pivot = b[kBoneSpine].transform.o;
+    for (int i = kBoneSpine; i < sk->numBones; ++i) {
+        // Descendant de la colonne ?
+        int p = i, guard = 0;
+        while (p > kBoneSpine && p < sk->numBones && guard++ < 32)
+            p = b[p].parentBoneNo;
+        if (p != kBoneSpine)
+            continue;
+        rgl::Transform& t = b[i].transform;
+        const float ws = t.s.w, wf = t.f.w, wu = t.u.w, wo = t.o.w;
+        t.s = Rotate(t.s, axis, c, sn), t.s.w = ws;
+        t.f = Rotate(t.f, axis, c, sn), t.f.w = wf;
+        t.u = Rotate(t.u, axis, c, sn), t.u.w = wu;
+        t.o = Add(pivot, Rotate(Sub(t.o, pivot), axis, c, sn)), t.o.w = wo;
+        b[i].skinningNeedsUpdate = true;
+    }
+    if (!g_loggedTorso) {
+        LOG_ENGINE("torse de face : rotation de %.0f degres du haut du corps", -yaw * 57.2958f);
+        g_loggedTorso = true;
+    }
+}
+
+// --- Prise à deux mains ----------------------------------------------------------------------
+// Arme à deux mains ou d'hast, gâchette droite tenue : l'arme suit l'axe des deux mains (espace
+// LOCAL d'OpenXR). La lame part de la main droite, du côté où pointe la manette droite ; le fil
+// garde la rotation de la main droite autour de l'axe. La main gauche est fixée sur l'arme : à
+// la distance de la main droite mesurée au moment de la prise (elle ne glisse plus le long du
+// manche), orientée le long de la poignée (rotation minimale de sa pose).
+struct Q {
+    float x, y, z, w;
+};
+Q QMul(const Q& a, const Q& b)
+{
+    return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+            a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+// Plus petite rotation amenant le vecteur unitaire a sur b
+Q QFromTo(float ax, float ay, float az, float bx, float by, float bz)
+{
+    const float d = ax * bx + ay * by + az * bz;
+    if (d < -0.9999f) { // opposés : demi-tour autour d'un axe perpendiculaire
+        float px = 0, py = -az, pz = ay;
+        if (py * py + pz * pz < 1e-6f)
+            px = az, py = 0, pz = -ax;
+        const float l = std::sqrt(px * px + py * py + pz * pz);
+        return {px / l, py / l, pz / l, 0};
+    }
+    const float cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+    Q q{cx, cy, cz, 1 + d};
+    const float l = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    return {q.x / l, q.y / l, q.z / l, q.w / l};
+}
+bool g_loggedTwoHand = false;
+std::atomic<bool> g_twoHandActive{false};
+std::atomic<float> g_twoHandOffset{0}; // position de la main gauche sur l'axe, depuis la main droite (m)
+
+// Fin de la prise à deux mains : la prochaine prise mesure de nouveau la place de la main gauche
+void ReleaseTwoHandGrip()
+{
+    g_twoHandActive = false;
+}
+
+bool ApplyTwoHandGrip(xr::HandPose hands[2])
+{
+    xr::HandPose& l = hands[0];
+    xr::HandPose& r = hands[1];
+    float dx = r.px - l.px, dy = r.py - l.py, dz = r.pz - l.pz;
+    const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 0.05f || len > 1.2f) {
+        g_twoHandActive = false;
+        return false; // mains confondues ou trop écartées : prise normale
+    }
+    dx /= len, dy /= len, dz /= len;
+    // Lame de la manette droite : -Z de sa pose grip ; l'axe prend son sens
+    float bx, by, bz;
+    QuatAxis(r, 0, 0, -1, bx, by, bz);
+    if (dx * bx + dy * by + dz * bz < 0)
+        dx = -dx, dy = -dy, dz = -dz;
+    // Main gauche fixée sur le manche : distance (signée, le long de l'axe) mesurée à la prise
+    const float along = (l.px - r.px) * dx + (l.py - r.py) * dy + (l.pz - r.pz) * dz;
+    if (!g_twoHandActive.exchange(true))
+        g_twoHandOffset = std::fabs(along);
+    // Distance fixe ; côté de la main droite où se trouve la main gauche (si l'axe s'inverse)
+    const float offset = along < 0 ? -g_twoHandOffset.load() : g_twoHandOffset.load();
+    l.px = r.px + dx * offset, l.py = r.py + dy * offset, l.pz = r.pz + dz * offset;
+    for (xr::HandPose* h : {&r, &l}) {
+        float hx, hy, hz;
+        QuatAxis(*h, 0, 0, -1, hx, hy, hz);
+        const Q q = QMul(QFromTo(hx, hy, hz, dx, dy, dz), Q{h->qx, h->qy, h->qz, h->qw});
+        h->qx = q.x, h->qy = q.y, h->qz = q.z, h->qw = q.w;
+    }
+    if (!g_loggedTwoHand) {
+        LOG_ENGINE("prise a deux mains : arme sur l'axe des mains (%.2f m entre les mains)", len);
+        g_loggedTwoHand = true;
+    }
+    return true;
+}
+
 void ApplyArms(rgl::Skeleton* sk, const rgl::Transform& frame, const rgl::Transform& camera)
 {
     xr::HandPose hands[2];
@@ -333,6 +451,14 @@ void ApplyArms(rgl::Skeleton* sk, const rgl::Transform& frame, const rgl::Transf
     // Arc, arbalète, arme à feu en visée ou en tir : les mains tiennent l'arme comme dans
     // l'animation du jeu (orientation), les bras suivent toujours les manettes
     const bool animatedGrip = PlayerAimingRangedWeapon();
+    // Arme à deux mains, gâchette droite tenue : l'arme suit l'axe des deux mains
+    if (hands[0].valid && hands[1].valid && xr::IsTwoHandGrip() && PlayerHoldsTwoHandedWeapon())
+        ApplyTwoHandGrip(hands);
+    else
+        ReleaseTwoHandGrip();
+    // Torse de face : armes de mêlée seulement (les postures de tir restent celles du jeu)
+    if (config::GetBool(config::Id::TorsoForward) && PlayerHoldsMeleeWeapon() && sk->numBones > rgl::kBoneItemR)
+        StraightenTorso(sk);
     // Côté extérieur de chaque bras dans le repère du personnage : -x à gauche, +x à droite
     if (hands[0].valid)
         SolveArm(sk, rgl::kBoneUpperArmL, hands[0], map, -1.0f, false, animatedGrip);

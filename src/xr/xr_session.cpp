@@ -10,6 +10,7 @@
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_PLATFORM_WIN32
 #include "xr/xr_session.h"
+#include "render/d3d9_hook.h"
 #include "render/frame_share.h"
 #include "render/game_window.h"
 #include "util/config.h"
@@ -21,6 +22,7 @@
 #include "engine/text_input.h"
 #include "engine/audio_route.h"
 #include "engine/frame_pacing.h"
+#include "engine/true_stereo.h"
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -186,6 +188,12 @@ private:
     uint32_t recommendedWidth_ = 0;
     uint32_t recommendedHeight_ = 0;
     bool windowResized_ = false;
+    bool windowWaitLogged_ = false;
+    float windowScale_ = 0; // échelle de rendu appliquée à la fenêtre
+    // Une fois par partie : la fenêtre du jeu prend la résolution d'un œil. Retenté à chaque
+    // frame tant que le jeu n'a pas encore présenté d'image (fenêtre inconnue) : la session
+    // peut démarrer avant lui.
+    void ResizeWindowOnce();
 
     // Pointeur des menus (manettes) et son point de curseur
     XrControls controls_;
@@ -201,13 +209,30 @@ private:
     void UpdateAudio();
     // Cadence du jeu calée sur le casque (rendu alterné : 2 images par rafraîchissement)
     void UpdatePacing(XrDuration period, bool stereo);
-    double pacingHz_ = 0;
-    int pacingMultiple_ = 0;
+    double refreshHz_ = 0;  // fréquence d'affichage du casque (la plus haute annoncée)
+    int pacingLevel_ = 1;   // une paire d'images toutes les pacingLevel_ frames du casque
+    int pacingPerPair_ = 2; // images du jeu par paire (2 rendu alterné, 1 vraie stéréo)
+    float pacingScale_ = 0; // échelle de rendu pour laquelle le niveau a été choisi
+    int pacingLow_ = 0;
+    // Retour au niveau plus rapide après une baisse : essai de quelques secondes, espacé de plus
+    // en plus s'il échoue (une scène trop lourde ne provoque pas un à-coup régulier)
+    static constexpr ULONGLONG kProbeFirstMs = 20000, kProbeMaxMs = 300000, kProbeWindowMs = 4000;
+    bool probing_ = false;
+    ULONGLONG probeAtMs_ = 0;
+    ULONGLONG probeBackoffMs_ = kProbeFirstMs;
     ULONGLONG pacingCheckMs_ = 0;
     unsigned long long pacingFrames_ = 0;
-    int pacingLow_ = 0;
-    double pacingCandidateHz_ = 0;     // nouvelle fréquence annoncée, retenue si elle dure
-    ULONGLONG pacingCandidateSince_ = 0;
+    float pacingManual_ = -1; // limite manuelle (réglage), 0 = automatique
+    // Slots du jeu copiés vers le casque : rendus au jeu quand la copie GPU est finie
+    void SubmitCopies();
+    void FinishCopies(bool wait);
+    std::vector<int> copySlots_;    // copiés à cette frame
+    std::vector<int> pendingSlots_; // copies soumises, en attente du GPU
+    int pendingFrames_ = 0;
+    uint64_t copyPair_ = UINT64_MAX; // paire stéréo copiée à cette frame
+    uint64_t shownPair_ = 0;         // dernière paire affichée
+    // Statistiques : paires nouvelles, sautées (jamais affichées), frames sans nouvelle paire
+    unsigned long long newPairs_ = 0, skippedPairs_ = 0, repeatFrames_ = 0;
 
     // Textures partagées du jeu ouvertes côté D3D11, par slot
     ID3D11Texture2D* shared_[render::kSharedSlots]{};
@@ -427,59 +452,136 @@ void XrApp::Recenter(XrTime time)
            l.pose.position.y, l.pose.position.z);
 }
 
-// Cadence : en rendu alterné, chaque image du jeu ne sert qu'un œil. Pour une cadence
-// régulière, le jeu doit produire exactement 2 images par rafraîchissement du casque (une
-// par œil) ; si la machine ne suit pas en stéréo, 1 par rafraîchissement (moins fluide mais
-// régulier, que la reprojection du runtime gère bien). Fréquence lue depuis le runtime.
+// Cadence : en rendu alterné, chaque image du jeu ne sert qu'un œil ; le casque affiche des
+// paires (gauche + droite). La cadence doit être RÉGULIÈRE : le limiteur du jeu vise une paire
+// toutes les 1, 2 ou 3 frames du casque (niveau), le plus rapide que la machine tient en
+// permanence. Une cadence qui varie avec la scène (jeu non limité) fait saccader l'image.
+// Fréquence de référence : la plus haute annoncée par le runtime.
 void XrApp::UpdatePacing(XrDuration period, bool stereo)
 {
     if (period <= 0)
         return;
+    engine::EnforceGameMaxFps(); // options du jeu : sa limite d'images ne doit pas écraser la nôtre
     const ULONGLONG now = GetTickCount64();
     const double hz = 1e9 / static_cast<double>(period);
-    // Le runtime annonce parfois brièvement une autre période (chargements, reprojection) :
-    // une nouvelle fréquence n'est retenue qu'après 2 s stable (immédiatement la première fois)
-    bool change = false;
-    if (std::fabs(hz - pacingHz_) > 1.0) {
-        if (std::fabs(hz - pacingCandidateHz_) > 1.0) {
-            pacingCandidateHz_ = hz;
-            pacingCandidateSince_ = now;
+    const float manual = config::Get(config::Id::GameFpsLimit);
+    // Images du jeu par paire : 2 en rendu alterné, 1 en vraie stéréo
+    const int perPair = engine::stereo::Enabled() ? 1 : 2;
+    // Nouvelle échelle de rendu : la machine tient peut-être une cadence plus haute, on repart du haut
+    if (manual != pacingManual_ || hz > refreshHz_ + 1.0 || perPair != pacingPerPair_ || windowScale_ != pacingScale_) {
+        pacingManual_ = manual;
+        pacingPerPair_ = perPair;
+        pacingScale_ = windowScale_;
+        refreshHz_ = std::max(refreshHz_, hz);
+        pacingLevel_ = 1;
+        pacingLow_ = 0;
+        probing_ = false;
+        probeBackoffMs_ = kProbeFirstMs;
+        pacingCheckMs_ = now;
+        pacingFrames_ = render::PresentCount();
+        if (manual > 0) {
+            LOG_XR("casque a %.1f Hz, limite manuelle du jeu : %.0f images/s", refreshHz_, manual);
+            engine::SetGameMaxFps(manual);
+        } else {
+            LOG_XR("casque a %.1f Hz : une paire d'images (gauche + droite) par frame du casque (%s)", refreshHz_,
+                   perPair == 1 ? "vraie stereo" : "rendu alterne");
+            engine::SetGameMaxFps(perPair * refreshHz_);
         }
-        change = pacingHz_ == 0 || now - pacingCandidateSince_ >= 2000;
-    } else {
-        pacingCandidateHz_ = 0;
+        return;
     }
-    if (change) {
-        pacingCandidateHz_ = 0;
-        pacingHz_ = hz;
-        pacingMultiple_ = 2;
-        pacingLow_ = 0;
-        LOG_XR("casque a %.1f Hz : le jeu vise %.0f images/s (une par oeil et par rafraichissement)", hz, hz * 2);
-        engine::SetGameMaxFps(hz * 2);
+    if (manual > 0 || !stereo) {
         pacingCheckMs_ = now;
-        pacingFrames_ = framesCopied_;
+        pacingFrames_ = render::PresentCount();
         return;
     }
-    if (!stereo || pacingMultiple_ != 2) {
-        pacingCheckMs_ = now;
-        pacingFrames_ = framesCopied_;
+    if (now - pacingCheckMs_ < (probing_ ? kProbeWindowMs : 5000))
         return;
-    }
-    if (now - pacingCheckMs_ < 5000)
-        return;
-    const double fps = (framesCopied_ - pacingFrames_) * 1000.0 / static_cast<double>(now - pacingCheckMs_);
+    const unsigned long long frames = render::PresentCount();
+    const double fps = (frames - pacingFrames_) * 1000.0 / static_cast<double>(now - pacingCheckMs_);
     pacingCheckMs_ = now;
-    pacingFrames_ = framesCopied_;
-    if (fps >= 0.9 * 2 * pacingHz_) {
-        pacingLow_ = 0;
+    pacingFrames_ = frames;
+    const double target = perPair * refreshHz_ / pacingLevel_;
+    // 90 % : quelques images de moins valent mieux que la moitié de la cadence (68 au lieu de 72
+    // ne doit pas faire tomber à 36)
+    const bool holds = fps >= 0.9 * target;
+
+    // Essai du niveau plus rapide : gardé s'il tient, sinon retour aussitôt et essai suivant plus tard
+    if (probing_) {
+        probing_ = false;
+        if (holds) {
+            LOG_XR("le jeu tient de nouveau %.0f images/s (%.0f mesurees) : cadence remontee", target, fps);
+            probeBackoffMs_ = kProbeFirstMs;
+            probeAtMs_ = now + probeBackoffMs_;
+            return;
+        }
+        ++pacingLevel_;
+        probeBackoffMs_ = std::min(probeBackoffMs_ * 2, kProbeMaxMs);
+        probeAtMs_ = now + probeBackoffMs_;
+        engine::SetGameMaxFps(perPair * refreshHz_ / pacingLevel_);
+        LOG_XR("essai a %.0f images/s echoue (%.0f mesurees) : retour a %.0f, prochain essai dans %llu s", target, fps,
+               perPair * refreshHz_ / pacingLevel_, probeBackoffMs_ / 1000);
         return;
     }
-    if (++pacingLow_ >= 2) {
-        pacingMultiple_ = 1;
-        LOG_XR("le jeu ne suit pas %.0f images/s (%.0f mesurees) : cadence ramenee a %.0f images/s", 2 * pacingHz_,
-               fps, pacingHz_);
-        engine::SetGameMaxFps(pacingHz_);
+    if (holds || pacingLevel_ >= 3) {
+        pacingLow_ = 0;
+        // Cadence réduite et tenue : on retente la plus rapide de temps en temps
+        if (holds && pacingLevel_ > 1 && now >= probeAtMs_) {
+            --pacingLevel_;
+            probing_ = true;
+            engine::SetGameMaxFps(perPair * refreshHz_ / pacingLevel_);
+            LOG_XR("essai de la cadence superieure : %.0f images/s", perPair * refreshHz_ / pacingLevel_);
+        }
+        return;
     }
+    if (++pacingLow_ < 2)
+        return;
+    // La machine ne tient pas ce rythme : niveau suivant (une paire toutes les n frames)
+    ++pacingLevel_;
+    pacingLow_ = 0;
+    probeAtMs_ = now + probeBackoffMs_;
+    const double next = perPair * refreshHz_ / pacingLevel_;
+    LOG_XR("le jeu ne tient pas %.0f images/s (%.0f mesurees) : une paire toutes les %d frames du casque "
+           "(%.0f images/s), nouvel essai dans %llu s", target, fps, pacingLevel_, next, probeBackoffMs_ / 1000);
+    engine::SetGameMaxFps(next);
+}
+
+// Copies vers le casque soumises au GPU : un seul point de synchronisation par frame
+void XrApp::SubmitCopies()
+{
+    if (copySlots_.empty())
+        return;
+    if (!pendingSlots_.empty())
+        FinishCopies(true); // la précédente doit être finie (une seule requête GPU)
+    context_->End(copyDone_);
+    context_->Flush();
+    pendingSlots_.swap(copySlots_);
+    copySlots_.clear();
+    pendingFrames_ = 0;
+}
+
+// Rend au jeu les textures dont la copie GPU est finie. wait : attendre (200 ms au plus)
+void XrApp::FinishCopies(bool wait)
+{
+    if (pendingSlots_.empty())
+        return;
+    HRESULT hr = context_->GetData(copyDone_, nullptr, 0, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    // Au-delà de quelques frames, on attend pour ne pas priver le jeu de textures
+    if (hr == S_FALSE && (wait || ++pendingFrames_ > 3)) {
+        Phase p("attente fin de copie D3D11");
+        const ULONGLONG deadline = GetTickCount64() + 200;
+        while ((hr = context_->GetData(copyDone_, nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline)
+            YieldProcessor();
+        if (hr != S_OK && !copyWarned_) {
+            LOG_XR("ALERTE : copie D3D11 non terminee (0x%08lX)", static_cast<unsigned long>(hr));
+            copyWarned_ = true;
+        }
+        hr = S_OK; // textures rendues quand même : le jeu ne doit pas manquer de slots
+    }
+    if (hr != S_OK)
+        return;
+    for (int slot : pendingSlots_)
+        render::ReleaseFrame(slot);
+    pendingSlots_.clear();
 }
 
 // Son : FMOD (chargé par le jeu) basculé sur la sortie audio du casque
@@ -623,12 +725,7 @@ void XrApp::PollEvents()
                 running_ = Check(xrBeginSession(session_, &bi), "xrBeginSession");
                 if (running_)
                     LOG_XR("session demarree");
-                // Une fois par partie : la fenêtre du jeu prend la résolution d'un œil
-                if (running_ && !windowResized_ && recommendedWidth_ && recommendedHeight_ &&
-                    config::GetBool(config::Id::ResizeWindow)) {
-                    render::ResizeGameWindow(recommendedWidth_, recommendedHeight_);
-                    windowResized_ = true;
-                }
+                ResizeWindowOnce();
                 // Casque mis : le jeu doit avoir le focus pour recevoir la souris (pointeur)
                 if (running_)
                     render::BringGameToFront();
@@ -660,7 +757,7 @@ bool XrApp::CopyGameFrame(int eye, int target)
     EyeChain& chain = chains_[target];
     render::SharedFrame frame;
     const uint64_t newerThan = chain.view.eye == eye ? chain.copiedSeq : 0;
-    if (!render::AcquireLatestFrame(eye, newerThan, frame))
+    if (!render::AcquireLatestFrame(eye, newerThan, frame, copyPair_))
         return false;
 
     bool copied = false;
@@ -700,17 +797,8 @@ bool XrApp::CopyGameFrame(int eye, int target)
             }
             if (acquired) {
                 context_->CopySubresourceRegion(chain.images[index].texture, 0, 0, 0, 0, src, 0, nullptr);
-                // Attendre la fin de la copie avant de rendre la texture au jeu (500 ms max)
-                Phase p("attente fin de copie D3D11");
-                context_->End(copyDone_);
-                const ULONGLONG deadline = GetTickCount64() + 500;
-                HRESULT hr;
-                while ((hr = context_->GetData(copyDone_, nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline)
-                    YieldProcessor();
-                if (hr != S_OK && !copyWarned_) {
-                    LOG_XR("ALERTE : copie D3D11 non terminee (0x%08lX)", static_cast<unsigned long>(hr));
-                    copyWarned_ = true;
-                }
+                // La texture du jeu ne lui est rendue qu'une fois la copie GPU finie
+                // (FinishCopies) : pas d'attente ici, qui retarderait la frame du casque
                 copied = true;
                 chain.hasContent = true;
                 chain.view = frame.view;
@@ -722,12 +810,40 @@ bool XrApp::CopyGameFrame(int eye, int target)
             xrReleaseSwapchainImage(swapchain, &ri);
         }
     }
-    render::ReleaseFrame();
+    if (copied)
+        copySlots_.push_back(frame.slot);
+    else
+        render::ReleaseFrame(frame.slot);
     return copied;
+}
+
+void XrApp::ResizeWindowOnce()
+{
+    // Échelle de rendu modifiée en cours de partie : nouveau redimensionnement
+    const float scale = config::Get(config::Id::RenderScale);
+    if (windowResized_ && scale != windowScale_)
+        windowResized_ = false;
+    if (!running_ || windowResized_ || !recommendedWidth_ || !recommendedHeight_ ||
+        !config::GetBool(config::Id::ResizeWindow))
+        return;
+    // Dimensions paires, au moins 256
+    const auto scaled = [scale](uint32_t v) {
+        return std::max<UINT>(256, static_cast<UINT>(v * scale / 2.0f + 0.5f) * 2);
+    };
+    const UINT w = scaled(recommendedWidth_), h = scaled(recommendedHeight_);
+    if (render::ResizeGameWindow(w, h)) {
+        windowResized_ = true;
+        windowScale_ = scale;
+        LOG_XR("resolution de rendu par oeil : %ux%u (echelle %.2f de la resolution recommandee)", w, h, scale);
+    } else if (!windowWaitLogged_) {
+        LOG_XR("fenetre du jeu pas encore connue : redimensionnement au premier Present");
+        windowWaitLogged_ = true;
+    }
 }
 
 void XrApp::RenderFrame()
 {
+    ResizeWindowOnce();
     XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState fs{XR_TYPE_FRAME_STATE};
     {
@@ -777,6 +893,25 @@ void XrApp::RenderFrame()
     uint64_t seqs[render::kCategories]{};
     render::LatestSeqs(seqs);
     const bool stereo = std::max(seqs[1], seqs[2]) > seqs[0];
+    FinishCopies(false); // copies de la frame précédente : textures rendues au jeu si finies
+    // Stéréo : les deux yeux viennent toujours de la même paire (même pose de tête, images
+    // consécutives du jeu), la plus récente dont les DEUX images sont finies. Prendre la
+    // dernière image de chaque œil séparément mélangeait des paires : l'œil droit montrait
+    // un autre instant que le gauche et tremblait.
+    copyPair_ = UINT64_MAX;
+    if (stereo) {
+        copyPair_ = render::LatestCompletePair();
+        if (copyPair_ > shownPair_) {
+            ++newPairs_;
+            if (shownPair_ > 0)
+                skippedPairs_ += copyPair_ - shownPair_ - 1;
+            shownPair_ = copyPair_;
+        } else {
+            ++repeatFrames_;
+        }
+    } else {
+        shownPair_ = 0; // pas de paires sautées comptées au retour en stéréo
+    }
     if (fs.shouldRender) {
         if (stereo) {
             for (int e = 0; e < 2; ++e)
@@ -786,6 +921,7 @@ void XrApp::RenderFrame()
             framesCopied_ += CopyGameFrame(render::kEyeFlat, 0);
         }
     }
+    SubmitCopies();
 
     UpdatePacing(fs.predictedDisplayPeriod, stereo);
 
@@ -807,13 +943,21 @@ void XrApp::RenderFrame()
     if (fs.shouldRender && stereo && eyesReady) {
         // Chaque œil : sa dernière image, avec la pose et le champ de vue de son rendu (le
         // runtime corrige l'écart avec la pose réelle au moment de l'affichage)
+        // Diagnostic : l'image (et la vue) de l'œil gauche pour les deux yeux
+        const bool leftOnly = config::GetBool(config::Id::DebugLeftImageBothEyes);
         for (int e = 0; e < 2; ++e) {
-            const render::RenderView& v = chains_[e].view;
+            const int src = leftOnly ? 0 : e;
+            const render::RenderView& v = chains_[src].view;
             views[e] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
             views[e].pose.orientation = {v.qx, v.qy, v.qz, v.qw};
             views[e].pose.position = {v.px, v.py, v.pz};
             views[e].fov = {v.angleLeft, v.angleRight, v.angleUp, v.angleDown};
-            views[e].subImage = {chains_[e].swapchain, fullRect, 0};
+            views[e].subImage = {chains_[src].swapchain, fullRect, 0};
+        }
+        static bool loggedLeftOnly = false;
+        if (leftOnly != loggedLeftOnly) {
+            LOG_XR("diagnostic : image gauche dans les deux yeux %s", leftOnly ? "ACTIVE" : "desactive");
+            loggedLeftOnly = leftOnly;
         }
         proj.space = localSpace_;
         proj.viewCount = 2;
@@ -924,7 +1068,10 @@ void XrApp::RenderFrame()
         LOG_XR("premiere frame soumise au casque");
         lastStats_ = now;
     } else if (now - lastStats_ >= kStatsIntervalMs) {
-        LOG_XR("frames casque : %llu soumises, %llu images du jeu copiees", framesSubmitted_, framesCopied_);
+        LOG_XR("frames casque : %llu soumises, %llu images du jeu copiees ; paires stereo : %llu nouvelles, "
+               "%llu sautees, %llu frames sans nouvelle paire",
+               framesSubmitted_, framesCopied_, newPairs_, skippedPairs_, repeatFrames_);
+        newPairs_ = skippedPairs_ = repeatFrames_ = 0;
         lastStats_ = now;
     }
 }
@@ -1043,6 +1190,7 @@ std::atomic<bool> g_bowMode{false};
 std::atomic<bool> g_triggerAttackMode{false};
 std::atomic<bool> g_firstPersonRequest{false};
 std::atomic<bool> g_drawing{false};
+std::atomic<bool> g_twoHandGrip{false};
 std::atomic<ULONGLONG> g_drawReleasedMs{0};
 constexpr ULONGLONG kBowAimAfterShotMs = 1000;
 std::atomic<int> g_aimSource{0};
@@ -1114,6 +1262,16 @@ void SetDrawing(bool drawing)
 bool IsDrawing()
 {
     return g_drawing;
+}
+
+void SetTwoHandGrip(bool held)
+{
+    g_twoHandGrip = held;
+}
+
+bool IsTwoHandGrip()
+{
+    return g_twoHandGrip;
 }
 
 bool IsBowAiming()

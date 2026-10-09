@@ -16,6 +16,10 @@ void UpdatePlayerWeapon();
 // Les mains du joueur gardent l'orientation de l'animation du jeu : arme à distance (arc,
 // arbalète, armes à feu, de jet) en visée, tir ou rechargement, et 1 s après. Tout thread.
 bool PlayerAimingRangedWeapon();
+// Le joueur tient une arme de mêlée (une main, deux mains, hast). Tout thread.
+bool PlayerHoldsMeleeWeapon();
+// Le joueur tient une arme à deux mains ou d'hast (prise à deux mains possible). Tout thread.
+bool PlayerHoldsTwoHandedWeapon();
 
 // Le joueur tient une arme à distance tenue à deux mains (arc, arbalète, pistolet, mousquet) :
 // ses bras gardent alors l'animation du jeu. Lisible depuis n'importe quel thread.

@@ -1,6 +1,7 @@
 #include "input/pointer.h"
 #include "input/dinput_hook.h"
 #include "render/game_window.h"
+#include "util/hook.h"
 #include "util/log.h"
 
 #include <MinHook.h>
@@ -54,6 +55,20 @@ bool InstallPointerHooks()
     if (!g_getCursorPosTarget) {
         LOG_INPUT("ERREUR : GetCursorPos introuvable, pointeur desactive");
         return false;
+    }
+    // Windows / Proton sur ARM : user32 est en ARM64EC, MinHook ne peut pas réécrire son code ;
+    // on détourne l'appel du jeu dans sa table d'imports
+    if (hook::IsArm64EcCode(g_getCursorPosTarget)) {
+        g_getCursorPosTarget = nullptr;
+        if (!hook::HookImport(GetModuleHandleW(nullptr), "USER32.dll", "GetCursorPos",
+                              reinterpret_cast<void*>(&HkGetCursorPos), reinterpret_cast<void**>(&g_getCursorPos),
+                              "[input]")) {
+            LOG_INPUT("ERREUR : GetCursorPos non detourne, pointeur desactive");
+            return false;
+        }
+        LOG_INPUT("GetCursorPos detourne (pointeur VR)");
+        InstallDInputHooks();
+        return true;
     }
     MH_STATUS st = MH_Initialize();
     if (st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED) {

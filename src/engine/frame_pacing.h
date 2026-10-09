@@ -9,5 +9,8 @@ namespace engine {
 bool InitFramePacing();
 // Images par seconde maximales du jeu (tout thread)
 bool SetGameMaxFps(double fps);
+// À appeler régulièrement : rétablit notre limite si le jeu a remis la sienne (options du jeu,
+// redimensionnement de la fenêtre)
+void EnforceGameMaxFps();
 
 } // namespace engine
