@@ -235,6 +235,17 @@ bool g_swingHit = false; // le mouvement en cours a déjà touché : plus de bal
 constexpr int kAttackThrust = 0, kAttackRight = 1, kAttackLeft = 2, kAttackOverhead = 3;
 constexpr float kBladeProbe = 0.5f; // point de la lame suivi (m depuis la poignée)
 
+// mbMission::getSweetSpotFactor : les dégâts sont multipliés par une courbe de la progression de
+// l'animation d'attaque (canal du haut du corps, mbAgentActionChannel::m_progress), nulle hors
+// de la fenêtre utile du coup. Hors attaque du jeu, la progression est celle de la pose de repos :
+// estocs et coups à cheval tombaient au plancher (3,6 de dégâts bruts). Pendant notre balayage,
+// on la place au milieu du plateau (facteur 1) : estoc [0,40 ; 0,60], par le haut [0,35 ; 1],
+// tailles [0,45 ; 0,70] à cheval et [0,20 ; 0,80] à pied.
+// cmp byte ptr [rglConfig::Battle::bAdjustedSweetSpot], 0 ; movss xmm2, [r9 + m_progress]
+constexpr char kSweetSpotProgressSig[] = "80 3D ?? ?? ?? ?? 00 F3 41 0F 10 91 ?? ?? ?? ??";
+constexpr float kSweetSpotProgress = 0.5f;
+uint32_t g_attackProgressOffset = 0; // mbAgent : progression du canal d'animation des attaques
+
 int AttackTypeFromMotion(const rgl::Transform& prev, const rgl::Transform& cur, int fallback)
 {
     auto point = [](const rgl::Transform& t) {
@@ -455,8 +466,15 @@ uintptr_t __fastcall HkUpdateMelee(uint8_t* agent, float dt)
     float out = 0;
     int32_t item[2] = {weapon.item[0], weapon.item[1]};
     uint8_t* mission = g_mission ? *g_mission : nullptr;
+    // Progression de l'animation d'attaque au plateau du facteur de dégâts, le temps de l'appel
+    float* progress = g_attackProgressOffset ? reinterpret_cast<float*>(agent + g_attackProgressOffset) : nullptr;
+    const float savedProgress = progress ? *progress : 0.0f;
+    if (progress)
+        *progress = kSweetSpotProgress;
     const int hit = g_checkAttack(mission, *reinterpret_cast<int32_t*>(agent + kAgentNo), item, nullptr,
                                   reinterpret_cast<Blow*>(blow), attack, &out);
+    if (progress)
+        *progress = savedProgress;
     if (hit != 0)
         g_swingHit = true;
     if (hit != 0 && g_loggedActive < 40) {
@@ -554,6 +572,15 @@ bool InstallCombatHook()
     if (!updateCamera || !checkAttack) {
         LOG_ENGINE("combat physique desactive (signature manquante)");
         return false;
+    }
+    g_attackProgressOffset = pattern::FindImm32("mbAgent : progression de l'animation d'attaque",
+                                                kSweetSpotProgressSig, 12);
+    if (g_attackProgressOffset < 0x800 || g_attackProgressOffset > 0x1000) {
+        LOG_ENGINE("progression de l'animation d'attaque introuvable (0x%X) : estocs et coups a cheval de "
+                   "l'arme toujours active affaiblis", g_attackProgressOffset);
+        g_attackProgressOffset = 0;
+    } else {
+        LOG_ENGINE("progression de l'animation d'attaque : mbAgent+0x%X", g_attackProgressOffset);
     }
     // mov rbx, [rip+disp32] : adresse = instruction suivante + disp32
     const uint8_t* load = updateCamera + kMissionLoadOffset;
