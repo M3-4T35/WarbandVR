@@ -240,8 +240,8 @@ Touch controllers, and also lets you remap the buttons.
 | Stick up / down | Mouse wheel (scrolling, map zoom) |
 | Stick left / right | Rotate the world map camera |
 | Grip (either hand) | Hold Ctrl (Ctrl+click in the inventory) |
-| Menu (left), short press | Escape |
-| Menu (left), long press (~1 s) | **Recenter the view** |
+| X or Menu (left), short press | Escape |
+| X or Menu (left), long press (~1 s) | **Recenter the view** |
 | Left stick click | Closes the order map |
 
 When the game asks for text (character name, for instance), a **virtual keyboard** appears
@@ -255,9 +255,9 @@ under the screen, in your Windows keyboard layout.
 | Stick click | **Radial order menu** |
 | Trigger | Block |
 | Grip | Use (talk, open, pick up…) |
-| X | Crosshair source (gaze / left hand / right hand); in the radial menu: back |
+| X | Short press: Escape; held 1 s: crosshair source (gaze / left hand / right hand); in the radial menu: back |
 | Y | Tab menu (leave the battle…) |
-| Menu | Short press: Escape; long press: recenter |
+| Menu | Short press: Escape; long press: recenter (under SteamVR this button opens the SteamVR dashboard: use X) |
 
 | Right hand | Action |
 |---|---|

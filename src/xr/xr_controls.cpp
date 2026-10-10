@@ -28,6 +28,7 @@ constexpr float kMoveThreshold = 0.4f;    // stick -> touche de déplacement
 float TurnDeadzone() { return config::Get(config::Id::TurnDeadzone); }
 float TurnRate() { return config::Get(config::Id::TurnSpeed) * 3.14159265f / 180.0f; } // radians par seconde
 constexpr float kActionThreshold = 0.5f;  // gâchettes / poignées analogiques
+constexpr float kTriggerRelease = 0.3f;   // gâchette droite déjà tenue : relâchée en deçà (hystérésis)
 float JumpThreshold() { return config::Get(config::Id::JumpThreshold); } // stick droit vers le haut -> saut
 
 // Attaque au geste (manette droite), vitesses en m/s
@@ -59,6 +60,7 @@ constexpr ULONGLONG kGapMs = 80;
 constexpr ULONGLONG kRecenterHoldMs = 800; // bouton menu tenu : recentrage (sinon Échap)
 constexpr ULONGLONG kWeaponModeHoldMs = 600; // bouton « changer d'arme » tenu : mode de l'arme
 constexpr ULONGLONG kViewHoldMs = 1000;      // clic du stick droit tenu : vue 1re / 3e personne
+constexpr ULONGLONG kAimHoldMs = 1000;       // X tenu : source du réticule (appui court = Échap)
 constexpr float kSnapPush = 0.7f, kSnapRelease = 0.3f; // rotation par crans       // pause entre deux touches d'une séquence
 constexpr ULONGLONG kSettleMs = 200;   // après la dernière touche : le menu du jeu est à jour
 constexpr ULONGLONG kGiveUpMs = 800;   // sans réponse du jeu : on abandonne l'attente
@@ -97,6 +99,9 @@ struct Profile {
     const char* drawR;   // arc : bander
     const char* attackR; // attaque de secours (les coups se donnent au geste)
     const char* shieldR; // mettre / retirer le bouclier
+    // Échap sur un bouton de la main gauche que le runtime laisse au jeu (SteamVR garde le bouton
+    // menu pour son tableau de bord) : appui court = Échap, X tenu = source du réticule en combat
+    const char* escapeAltL = nullptr;
 };
 
 const Profile kProfiles[] = {
@@ -109,13 +114,13 @@ const Profile kProfiles[] = {
      "input/thumbstick", "input/x/click", "input/menu/click", "input/y/click", "input/thumbstick/click",
      "input/trigger/value", "input/squeeze/value",
      "input/thumbstick", "input/thumbstick/click", "input/a/click", "input/trigger/value", "input/squeeze/value",
-     "input/b/click"},
+     "input/b/click", "input/x/click"},
     {"/interaction_profiles/valve/index_controller", "input/trigger/click", "input/b/click", "input/b/click",
      "input/thumbstick/y", "input/thumbstick/x", "input/squeeze/value",
      "input/thumbstick", "input/a/click", nullptr, "input/b/click", "input/thumbstick/click", "input/trigger/click",
      "input/squeeze/value",
      "input/thumbstick", "input/thumbstick/click", "input/a/click", "input/trigger/click", "input/squeeze/value",
-     "input/b/click"},
+     "input/b/click", "input/a/click"},
     {"/interaction_profiles/htc/vive_controller", "input/trigger/click", "input/squeeze/click",
      "input/squeeze/click", "input/trackpad/y",
      "input/trackpad/x", nullptr,
@@ -210,6 +215,8 @@ bool XrControls::Init(XrInstance instance, XrSession session)
         makeAction(combatSet_, tabMenu_, XR_ACTION_TYPE_BOOLEAN_INPUT, "tab_menu", "Menu Tab", false) &&
         makeAction(combatSet_, orders_, XR_ACTION_TYPE_BOOLEAN_INPUT, "orders", "Vue strategique", false) &&
         makeAction(combatSet_, escape_, XR_ACTION_TYPE_BOOLEAN_INPUT, "escape", "Echap", false) &&
+        makeAction(combatSet_, escapeAlt_, XR_ACTION_TYPE_BOOLEAN_INPUT, "escape_alt",
+                   "Echap (appui court) / source du reticule (tenu)", false) &&
         makeAction(combatSet_, shield_, XR_ACTION_TYPE_BOOLEAN_INPUT, "shield", "Bouclier", false) &&
         makeAction(combatSet_, handPose_, XR_ACTION_TYPE_POSE_INPUT, "hand_pose", "Mains", true) &&
         makeAction(combatSet_, combatAim_, XR_ACTION_TYPE_POSE_INPUT, "aim_pose", "Viser (combat)", true);
@@ -241,6 +248,8 @@ bool XrControls::Init(XrInstance instance, XrSession session)
         add(aimMode_, false, p.aimModeL);
         add(escape_, false, p.escapeL);
         add(menuEscape_, false, p.escapeL); // même bouton dans les menus
+        add(menuEscape_, false, p.escapeAltL);
+        add(escapeAlt_, false, p.escapeAltL);
         add(tabMenu_, false, p.tabL);
         add(orders_, false, p.ordersL);
         add(closeOrders_, false, p.ordersL); // même bouton dans les menus
@@ -314,6 +323,7 @@ void XrControls::ReleaseAll()
     tapKey_ = 0;
     EndFlagPlacement();
     menuButtonDown_ = menuButtonLong_ = false;
+    aimModeDown_ = aimModeLong_ = false;
     snapLatched_ = false;
     keyQueue_.clear();
     pending_ = false;
@@ -327,6 +337,7 @@ void XrControls::ReleaseAll()
     SetSwingBusy(false);
     SetBladeSpeed(0);
     drawing_ = false;
+    triggerHeld_ = false;
     SetDrawing(false);
 }
 
@@ -972,8 +983,17 @@ void XrControls::UpdateCombat(XrSession session, XrSpace space, XrTime time, con
     // écart : combat_hook), relâchée = tir. Sinon, attaque au geste.
     const bool bow = IsBowMode();
     const bool attackButton = GetBool(session, attack_, XR_NULL_PATH); // poignée droite
-    // Gâchette droite ; avec l'arc, la poignée droite fait de même
-    const bool useTrigger = GetFloat(session, draw_, XR_NULL_PATH) > kActionThreshold || (bow && attackButton);
+    // Gâchette droite, avec hystérésis (une valeur qui oscille autour du seuil relâchait l'arc
+    // aussitôt bandé) ; avec l'arc, la poignée droite fait de même
+    const float triggerValue = GetFloat(session, draw_, XR_NULL_PATH);
+    triggerHeld_ = triggerValue > (triggerHeld_ ? kTriggerRelease : kActionThreshold);
+    if (triggerHeld_ != triggerLogged_ || attackButton != gripLogged_) {
+        LOG_XR("main droite : gachette %s (%.2f), poignee %s", triggerHeld_ ? "tenue" : "relachee", triggerValue,
+               attackButton ? "tenue" : "relachee");
+        triggerLogged_ = triggerHeld_;
+        gripLogged_ = attackButton;
+    }
+    const bool useTrigger = triggerHeld_ || (bow && attackButton);
     bool swingHeld = false;
     if (bow) {
         SetBladeSpeed(0);
@@ -1002,12 +1022,12 @@ void XrControls::UpdateCombat(XrSession session, XrSpace space, XrTime time, con
     }
     useTriggerDown_ = useTrigger;
     // Armes de mêlée : gâchette droite tenue = arme tenue à deux mains (axe des deux mains)
-    const bool twoHand = !bow && !IsTriggerAttackMode() && GetFloat(session, draw_, XR_NULL_PATH) > kActionThreshold;
+    const bool twoHand = !bow && !IsTriggerAttackMode() && triggerHeld_;
     if (twoHand != IsTwoHandGrip())
         LOG_XR("gachette droite : prise a deux mains %s", twoHand ? "oui" : "non");
     SetTwoHandGrip(twoHand);
     SetDrawing(drawing_);
-    const bool throwHeld = IsTriggerAttackMode() && (attackButton || GetFloat(session, draw_, XR_NULL_PATH) > kActionThreshold);
+    const bool throwHeld = IsTriggerAttackMode() && (attackButton || triggerHeld_);
     const bool attack = swingHeld || drawing_ || throwHeld || (!bow && attackButton);
     const bool block = GetFloat(session, block_, XR_NULL_PATH) > kActionThreshold;
     input::InjectMouseButton(0, attack);
@@ -1022,10 +1042,25 @@ void XrControls::UpdateCombat(XrSession session, XrSpace space, XrTime time, con
     }
     shieldDown_ = shield;
 
-    // Source du réticule : regard -> main gauche -> main droite
-    if (aimMode && !aimModeDown_ && !radialWasOpen) {
-        static const char* const kNames[] = {"regard", "main gauche", "main droite"};
-        LOG_XR("reticule : %s", kNames[static_cast<int>(CycleAimSource())]);
+    // Source du réticule : regard -> main gauche -> main droite. Sur les profils où ce bouton
+    // sert aussi d'Échap (X des Touch) : appui court = Échap, tenu 1 s = source du réticule ;
+    // sinon à l'appui. Menu radial ouvert : retour, sans rien d'autre.
+    static const char* const kAimNames[] = {"regard", "main gauche", "main droite"};
+    const ULONGLONG aimNow = GetTickCount64();
+    if (aimMode && !aimModeDown_) {
+        aimModeSinceMs_ = aimNow;
+        aimModeEscape_ = GetBool(session, escapeAlt_, XR_NULL_PATH);
+        aimModeLong_ = radialWasOpen;
+        if (!aimModeLong_ && !aimModeEscape_) {
+            aimModeLong_ = true;
+            LOG_XR("reticule : %s", kAimNames[static_cast<int>(CycleAimSource())]);
+        }
+    } else if (aimMode && !aimModeLong_ && aimNow - aimModeSinceMs_ >= kAimHoldMs) {
+        aimModeLong_ = true;
+        LOG_XR("X tenu : reticule : %s", kAimNames[static_cast<int>(CycleAimSource())]);
+    } else if (!aimMode && aimModeDown_ && !aimModeLong_ && aimModeEscape_) {
+        LOG_XR("X : Echap");
+        SendKeys({kKeyEscape});
     }
     aimModeDown_ = aimMode;
     // Clic du stick droit : appui court = coup de pied (E), tenu 1 s = vue 1re / 3e personne (R)

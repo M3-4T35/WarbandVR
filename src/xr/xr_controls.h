@@ -130,6 +130,7 @@ private:
     XrAction tabMenu_ = XR_NULL_HANDLE;
     XrAction orders_ = XR_NULL_HANDLE;
     XrAction escape_ = XR_NULL_HANDLE;
+    XrAction escapeAlt_ = XR_NULL_HANDLE; // X (Touch) : Échap au lieu du bouton menu (SteamVR)
     XrAction shield_ = XR_NULL_HANDLE;
     XrAction handPose_ = XR_NULL_HANDLE; // pose de préhension des mains en combat (gestes, bras)
     XrSpace combatHandSpaces_[2]{};
@@ -167,7 +168,12 @@ private:
     unsigned long long weaponSinceMs_ = 0;
     bool drawing_ = false;       // arc bandé (gâchette droite tenue après encochage)
     bool useTriggerDown_ = false;
+    bool triggerHeld_ = false;                         // gâchette droite (hystérésis)
+    bool triggerLogged_ = false, gripLogged_ = false;  // derniers états journalisés
     bool aimModeDown_ = false;
+    bool aimModeLong_ = false;   // X tenu : source du réticule changée (pas d'Échap au relâchement)
+    bool aimModeEscape_ = false; // ce bouton sert aussi d'Échap sur ce profil
+    unsigned long long aimModeSinceMs_ = 0;
     bool shieldDown_ = false;
     bool ordersOpen_ = false; // vue stratégique ouverte par X
     bool closeDown_ = false;

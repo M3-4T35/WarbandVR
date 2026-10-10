@@ -243,8 +243,8 @@ Steam Frame comme des Touch, et permet aussi de réassigner les boutons.
 | Stick haut / bas | Molette (défilement, zoom de la carte) |
 | Stick gauche / droite | Tourner la caméra de la carte du monde |
 | Poignée (une des deux mains) | Ctrl maintenu (Ctrl+clic dans l'inventaire) |
-| Menu (gauche), appui court | Échap |
-| Menu (gauche), appui long (~1 s) | **Recentrer la vue** |
+| X ou Menu (gauche), appui court | Échap |
+| X ou Menu (gauche), appui long (~1 s) | **Recentrer la vue** |
 | Clic du stick gauche | Referme la carte des ordres |
 
 Quand le jeu demande du texte (nom du personnage, par exemple), un **clavier virtuel**
@@ -258,9 +258,9 @@ apparaît sous l'écran, dans la disposition de votre clavier Windows.
 | Clic du stick | **Menu radial des ordres** |
 | Gâchette | Bloquer |
 | Poignée | Utiliser (parler, ouvrir, ramasser…) |
-| X | Source du réticule (regard / main gauche / main droite) ; dans le menu radial : retour |
+| X | Appui court : Échap ; tenu 1 s : source du réticule (regard / main gauche / main droite) ; dans le menu radial : retour |
 | Y | Menu Tab (quitter la bataille…) |
-| Menu | Appui court : Échap ; appui long : recentrer |
+| Menu | Appui court : Échap ; appui long : recentrer (sous SteamVR, ce bouton ouvre le tableau de bord de SteamVR : utilisez X) |
 
 | Main droite | Action |
 |---|---|
