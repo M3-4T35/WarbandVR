@@ -213,6 +213,14 @@ constexpr int kGameCameraMode = 0x13DF0; // mbGame::m_cameraMode (0 : 3e personn
 // mov rax, [g_game] ; cmp dword ptr [rax+13DF0h], 0
 constexpr char kGameCameraModeSig[] = "48 8B 05 ?? ?? ?? ?? 83 B8 F0 3D 01 00 00";
 const uint8_t* g_viewAgent = nullptr; // agent du joueur pour lequel la vue a été vérifiée
+// Vue 1re personne par défaut : R est une bascule, et le jeu peut l'ignorer ou remettre la 3e
+// personne pendant l'apparition. On vérifie donc la vue pendant quelques secondes et on renvoie R
+// tant qu'elle est en 3e personne (sauf si le joueur a changé de vue lui-même).
+constexpr ULONGLONG kViewCheckMs = 5000;   // durée de la surveillance après l'apparition
+constexpr ULONGLONG kViewRetryMs = 800;    // délai avant de renvoyer R (le temps que le jeu bascule)
+constexpr int kViewMaxRequests = 4;
+ULONGLONG g_viewSinceMs = 0, g_viewRequestMs = 0;
+int g_viewRequests = 0;
 int g_logged = 0;
 int g_loggedStarts = 0;
 
@@ -515,13 +523,29 @@ void UpdatePlayerWeapon()
     g_twoHandedHeld = w.item[0] >= 0 && (w.type == kTypeTwoHanded || w.type == kTypePolearm);
     // Nouvel agent du joueur (début de mission) en vue 3e personne : passer en 1re personne,
     // une fois ; le joueur reste libre de rechanger (clic du stick droit)
+    const ULONGLONG now = GetTickCount64();
     if (agent && agent != g_viewAgent) {
         g_viewAgent = agent;
-        const uint8_t* game = g_game ? *g_game : nullptr;
-        if (game && *reinterpret_cast<const int32_t*>(game + kGameCameraMode) == 0)
-            xr::RequestFirstPersonView();
+        g_viewSinceMs = now;
+        g_viewRequestMs = 0;
+        g_viewRequests = 0;
+        xr::TakeManualViewToggle(); // un changement d'une mission précédente ne compte pas
     } else if (!agent) {
         g_viewAgent = nullptr;
+    }
+    if (agent && g_viewSinceMs && now - g_viewSinceMs < kViewCheckMs) {
+        const uint8_t* game = g_game ? *g_game : nullptr;
+        if (xr::TakeManualViewToggle()) {
+            g_viewSinceMs = 0; // le joueur choisit sa vue
+        } else if (game && *reinterpret_cast<const int32_t*>(game + kGameCameraMode) == 0 &&
+                   g_viewRequests < kViewMaxRequests && (!g_viewRequestMs || now - g_viewRequestMs >= kViewRetryMs)) {
+            if (g_viewRequests > 0)
+                LOG_ENGINE("vue toujours en 3e personne %llu ms apres l'apparition : touche R renvoyee",
+                           now - g_viewSinceMs);
+            g_viewRequestMs = now;
+            ++g_viewRequests;
+            xr::RequestFirstPersonView();
+        }
     }
     xr::SetBowMode(w.type == kTypeBow);
     xr::SetTriggerAttackMode(w.type == kTypeCrossbow || w.type == kTypePistol || w.type == kTypeMusket ||
@@ -533,7 +557,6 @@ void UpdatePlayerWeapon()
     // Phase d'attaque : 1 = visée, 5 = rechargement (alterne avec 0 d'une frame à l'autre), 0 = repos
     const int phase = ranged ? *reinterpret_cast<const int32_t*>(agent + kAgentAttackPhase) : -1;
     // Prise de l'animation du jeu pendant la visée, le tir, le rechargement, et encore 1 s après
-    const ULONGLONG now = GetTickCount64();
     if (ranged && phase != 0)
         g_gripUntilMs = now + kGripAfterShotMs;
     g_rangedAiming = ranged && now < g_gripUntilMs;

@@ -7,15 +7,23 @@
 
 namespace vrlog {
 namespace {
+char g_dir[MAX_PATH]{};
 char g_path[MAX_PATH]{};
 std::mutex g_mutex;
 } // namespace
 
+const char* Dir()
+{
+    return g_dir;
+}
+
 void Init(HMODULE self)
 {
-    GetModuleFileNameA(self, g_path, MAX_PATH);
-    if (char* slash = strrchr(g_path, '\\'))
-        strcpy_s(slash + 1, MAX_PATH - (slash + 1 - g_path), "warband_vr.log");
+    GetModuleFileNameA(self, g_dir, MAX_PATH);
+    if (char* slash = strrchr(g_dir, '\\'))
+        snprintf(slash + 1, MAX_PATH - (slash + 1 - g_dir), "%s\\", kDirName);
+    CreateDirectoryA(g_dir, nullptr); // échoue sans conséquence s'il existe déjà
+    snprintf(g_path, MAX_PATH, "%swarband_vr.log", g_dir);
 
     SYSTEMTIME t;
     GetLocalTime(&t);

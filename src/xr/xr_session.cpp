@@ -1251,6 +1251,7 @@ std::atomic<bool> g_swingBusy{false};
 std::atomic<bool> g_bowMode{false};
 std::atomic<bool> g_triggerAttackMode{false};
 std::atomic<bool> g_firstPersonRequest{false};
+std::atomic<bool> g_manualViewToggle{false};
 std::atomic<bool> g_drawing{false};
 std::atomic<bool> g_twoHandGrip{false};
 std::atomic<ULONGLONG> g_drawReleasedMs{0};
@@ -1297,6 +1298,16 @@ void RequestFirstPersonView()
 bool TakeFirstPersonViewRequest()
 {
     return g_firstPersonRequest.exchange(false);
+}
+
+void NoteManualViewToggle()
+{
+    g_manualViewToggle = true;
+}
+
+bool TakeManualViewToggle()
+{
+    return g_manualViewToggle.exchange(false);
 }
 
 void SetTriggerAttackMode(bool on)

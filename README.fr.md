@@ -74,7 +74,7 @@ Il contient trois fichiers à garder **dans un même dossier** :
 | `warband_vr_config.exe` | Lanceur et outil de configuration (fenêtre) |
 
 Le fichier de réglages `warband_vr.ini` est créé au premier lancement dans ce dossier, avec
-les valeurs par défaut. Le journal `warband_vr.log` y est écrit à chaque session.
+les valeurs par défaut. Le journal `warband_vr.log` est écrit à chaque session dans le dossier `warbandVRlog`, à côté de la DLL.
 
 ### Windows
 
@@ -166,7 +166,7 @@ prochain lancement.
 
 | Préréglage | Contenu |
 |---|---|
-| **PCVR (défaut)** | Réglages VR validés au Quest 2 ; graphismes de Warband en **Ultra**, sans le flou de profondeur de champ |
+| **PCVR (défaut)** | Réglages VR validés au Quest 2, vraie stéréo ; graphismes de Warband en **Ultra**, sans le flou de profondeur de champ |
 | **Steam Frame (autonome)** | Vraie stéréo, échelle de rendu 0,85 ; graphismes de Warband en **Bas**, avec le sang au maximum (72 paires d'images par seconde validées au casque) |
 | Les vôtres | *Enregistrer…* les range dans `warband_vr_presets\` (à côté du `.ini`) ; *Exporter…* écrit un fichier où vous voulez ; *Importer…* en ajoute un et l'applique ; *Supprimer* |
 
@@ -225,7 +225,7 @@ prochain lancement, pour les modules qui proposent cette langue.
 | | Arc : allonge complète (écart des mains) | 0,5 m |
 | | Arc : précision maximale | 110 % |
 | Avancé | Visée : gain de l'asservissement | 0,5 |
-| | **Vraie stéréo** (expérimental) | Non |
+| | **Vraie stéréo** | Oui |
 | | Diagnostics : œil droit en premier, image gauche dans les deux yeux, temps par image dans le log | Non |
 
 ## Commandes
@@ -304,17 +304,17 @@ en campagne, pas en bataille personnalisée.
 |---|---|
 | F9 | Change le mode de roulis (pour la session) |
 | F10 | Active ou désactive l'arme de mêlée toujours active |
-| F11 | Capture des deux yeux et de l'interface en PNG à côté de la DLL (fige le jeu quelques secondes) |
+| F11 | Capture des deux yeux et de l'interface en PNG dans `warbandVRlog` (fige le jeu quelques secondes) |
 
 ## Fonctionnalités
 
 - **Rendu stéréo**, chaque œil avec sa caméra (position et champ de vue du casque) :
-  - **rendu alterné** (par défaut) : un œil par image du jeu, deux images par rafraîchissement
-    du casque, avec la même pose de tête pour les deux yeux d'une paire ;
-  - **vraie stéréo** (réglage *Vraie stéréo*) : les deux yeux à chaque image du jeu. La
+  - **vraie stéréo** (par défaut, réglage *Vraie stéréo*) : les deux yeux à chaque image du jeu. La
     simulation, les ombres et l'interface ne sont calculées qu'une fois par paire : relief
     juste en mouvement, et jusqu'à deux fois plus d'images quand le jeu est limité par le
-    processeur.
+    processeur ;
+  - **rendu alterné** (*Vraie stéréo* désactivée) : un œil par image du jeu, deux images par
+    rafraîchissement du casque, avec la même pose de tête pour les deux yeux d'une paire.
 - **Cadence** calée sur le casque : une paire d'images par rafraîchissement ; si la machine ne
   suit pas, une paire toutes les 2 ou 3 rafraîchissements, avec des essais réguliers pour
   remonter dès que possible. La limite d'images des options du jeu est ignorée en VR.
@@ -345,8 +345,8 @@ en campagne, pas en bataille personnalisée.
 
 - **Prise à deux mains** : la main gauche ne se pose sur l'arme que tant que la gâchette droite
   est tenue ; pour les coups au geste, le jeu joue toujours ses propres animations.
-- **Vraie stéréo** : expérimentale, validée sur le Steam Frame en autonome et sur PC avec le
-  Steam Frame en streaming (désactivée dans le préréglage PCVR).
+- **Vraie stéréo** (activée par défaut) : validée sur le Steam Frame en autonome et sur PC avec
+  le Steam Frame en streaming. Si un œil a l'air faux, désactivez-la (rendu alterné).
 - **Cadence par paires et vraie stéréo** : validées sur le Steam Frame en autonome et en
   streaming ; pas encore revalidées au Quest 2.
 - **S'accroupir** : non associé (désactivé dans Native).
@@ -358,7 +358,7 @@ en campagne, pas en bataille personnalisée.
 
 ## Dépannage
 
-Tout est consigné dans **`warband_vr.log`**, à côté de la DLL (en français). Les lignes sont
+Tout est consigné dans **`warbandVRlog\warband_vr.log`**, à côté de la DLL (en français). Les lignes sont
 préfixées par module (`[xr]`, `[render]`, `[engine]`, `[input]`). Le lanceur écrit
 `warband_vr_injector.log` au même endroit.
 
@@ -375,7 +375,7 @@ préfixées par module (`[xr]`, `[render]`, `[engine]`, `[input]`). Le lanceur �
 | Les coups partent dans la mauvaise direction | Option du jeu « direction d'attaque : mouvement de la souris » ; réglages *Geste* |
 | Une fonction ne marche plus après une mise à jour de WSE2 | Cherchez « signature » dans le log |
 | `warband_vr_injector.exe` a disparu, ou alerte de l'antivirus | Faux positif : Windows Defender peut signaler l'injecteur (`Behavior:Win32/DefenseEvasion.A!ml`) parce qu'il charge une DLL dans le jeu, ce qui est le principe du mod. Restaurez-le depuis *Sécurité Windows → Historique de protection* et ajoutez le dossier du mod aux exclusions |
-| Un œil a l'air faux, ou le HUD manque | Activez *Diagnostic : captures des deux yeux* (onglet Avancé), reproduisez le problème et joignez les PNG et `warband_vr.log` à votre signalement |
+| Un œil a l'air faux, ou le HUD manque | Activez *Diagnostic : captures des deux yeux* (onglet Avancé), reproduisez le problème et joignez le contenu du dossier `warbandVRlog` (PNG et logs) à votre signalement |
 
 ## Compiler depuis les sources
 

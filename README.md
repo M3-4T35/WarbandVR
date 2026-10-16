@@ -73,7 +73,7 @@ contains three files to keep **in the same folder**:
 | `warband_vr_config.exe` | Launcher and configuration tool (window) |
 
 The settings file `warband_vr.ini` is created in that folder at first launch, with the
-default values. The log `warband_vr.log` is written there at every session.
+default values. The log `warband_vr.log` is written at every session in the `warbandVRlog` folder, next to the DLL.
 
 ### Windows
 
@@ -164,7 +164,7 @@ runtime. Warband graphics and the game language apply at the next launch.
 
 | Preset | Contents |
 |---|---|
-| **PCVR (default)** | VR settings validated on the Quest 2; Warband graphics on **Ultra**, without depth of field blur |
+| **PCVR (default)** | VR settings validated on the Quest 2, true stereo; Warband graphics on **Ultra**, without depth of field blur |
 | **Steam Frame (standalone)** | True stereo, render scale 0.85; Warband graphics on **Low**, with maximum blood (72 image pairs per second validated in the headset) |
 | Your own | *Save as…* stores them in `warband_vr_presets\` (next to the `.ini`); *Export…* writes a file anywhere; *Import…* adds one and applies it; *Delete* |
 
@@ -222,7 +222,7 @@ for the modules that provide that language.
 | | Bow: full draw (distance between hands) | 0.5 m |
 | | Bow: maximum precision | 110 % |
 | Advanced | Aim: servo gain | 0.5 |
-| | **True stereo** (experimental) | No |
+| | **True stereo** | Yes |
 | | Diagnostics: right eye first, left image in both eyes, frame timings in the log | No |
 
 ## Controls
@@ -300,16 +300,16 @@ campaign, not in custom battles.
 |---|---|
 | F9 | Cycles the roll mode (for the session) |
 | F10 | Toggles the always-active melee weapon |
-| F11 | Screenshot of both eyes and the interface as PNG next to the DLL (freezes the game a few seconds) |
+| F11 | Screenshot of both eyes and the interface as PNG in `warbandVRlog` (freezes the game a few seconds) |
 
 ## Features
 
 - **Stereo rendering**, each eye with its own camera (headset position and field of view):
-  - **alternate-eye rendering** (default): one eye per game frame, two frames per headset
-    refresh, with the same head pose for both eyes of a pair;
-  - **true stereo** (*True stereo* setting): both eyes in every game frame. Simulation,
+  - **true stereo** (default, *True stereo* setting): both eyes in every game frame. Simulation,
     shadows and interface are computed once per pair: correct depth while moving, and up to
-    twice as many images when the game is CPU-limited.
+    twice as many images when the game is CPU-limited;
+  - **alternate-eye rendering** (*True stereo* off): one eye per game frame, two frames per
+    headset refresh, with the same head pose for both eyes of a pair.
 - **Frame pacing** locked to the headset: one image pair per refresh; if the machine cannot
   keep up, one pair every 2 or 3 refreshes, with regular attempts to go back up as soon as
   possible. The frame rate limit of the game options is ignored in VR.
@@ -339,8 +339,8 @@ campaign, not in custom battles.
 
 - **Two-handed grip**: the left hand is placed on the weapon only while the right trigger is
   held; the game still plays its own one-handed or two-handed animations for gesture attacks.
-- **True stereo**: experimental, validated on the standalone Steam Frame and on PC with the
-  streamed Steam Frame (off in the PCVR preset).
+- **True stereo** (on by default): validated on the standalone Steam Frame and on PC with the
+  streamed Steam Frame. If an eye looks wrong, turn it off (alternate-eye rendering).
 - **Pair-based pacing and true stereo**: validated on the standalone and streamed Steam Frame;
   not yet revalidated on the Quest 2.
 - **Crouching**: not bound (disabled in Native).
@@ -352,7 +352,7 @@ campaign, not in custom battles.
 
 ## Troubleshooting
 
-Everything is recorded in **`warband_vr.log`**, next to the DLL (written in French). Lines are
+Everything is recorded in **`warbandVRlog\warband_vr.log`**, next to the DLL (written in French). Lines are
 prefixed by module (`[xr]`, `[render]`, `[engine]`, `[input]`). The injector writes
 `warband_vr_injector.log` in the same place.
 
@@ -369,7 +369,7 @@ prefixed by module (`[xr]`, `[render]`, `[engine]`, `[input]`). The injector wri
 | Attacks go in the wrong direction | Game option "attack direction: by mouse movement"; *Gesture* settings |
 | A feature stopped working after a WSE2 update | Look for "signature" in the log |
 | `warband_vr_injector.exe` disappeared, or an antivirus warning | False positive: Windows Defender may flag the injector (`Behavior:Win32/DefenseEvasion.A!ml`) because it loads a DLL into the game, which is how the mod works. Restore it from *Windows Security → Protection history* and add the mod folder to the exclusions |
-| An eye looks wrong, or the HUD is missing | Enable *Diagnostic: capture both eyes* (Advanced tab), reproduce, and attach the PNG files and `warband_vr.log` to your report |
+| An eye looks wrong, or the HUD is missing | Enable *Diagnostic: capture both eyes* (Advanced tab), reproduce, and attach the contents of the `warbandVRlog` folder (PNG files and logs) to your report |
 
 ## Building from source
 

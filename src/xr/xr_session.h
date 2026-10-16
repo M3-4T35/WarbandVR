@@ -52,6 +52,9 @@ bool IsBowMode();
 // Début de mission en vue 3e personne : la manette envoie une fois la touche de vue (R)
 void RequestFirstPersonView();
 bool TakeFirstPersonViewRequest();
+// Vue changée par le joueur (clic du stick droit tenu) : la vue 1re personne par défaut n'insiste plus
+void NoteManualViewToggle();
+bool TakeManualViewToggle();
 void SetTriggerAttackMode(bool on);
 bool IsTriggerAttackMode();
 

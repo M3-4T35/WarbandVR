@@ -46,7 +46,7 @@ constexpr wchar_t kDefaultGameArgs[] = L"--module Native --no-intro";
 constexpr const wchar_t* kGraphicsModules[] = {L"d3d9.dll", L"d3d11.dll", L"dxgi.dll",
                                                L"opengl32.dll"};
 
-// Sorties du lanceur : console (si elle existe) et warband_vr_injector.log à côté de lui
+// Sorties du lanceur : console (si elle existe) et warbandVRlog\warband_vr_injector.log à côté de lui
 // (sous Proton, la console n'est pas visible)
 FILE* g_log = nullptr;
 
@@ -233,7 +233,10 @@ int wmain(int argc, wchar_t** argv)
     // l'injecteur ; la ligne de commande reste prioritaire
     config::Load(config::DefaultPath());
     {
-        const std::wstring logPath = DirOfSelf() + L"\\warband_vr_injector.log";
+        // Dossier des logs, partagé avec la DLL (warbandVRlog), créé au besoin
+        const std::wstring logDir = DirOfSelf() + L"\\warbandVRlog";
+        CreateDirectoryW(logDir.c_str(), nullptr);
+        const std::wstring logPath = logDir + L"\\warband_vr_injector.log";
         if (_wfopen_s(&g_log, logPath.c_str(), L"w, ccs=UTF-8") != 0)
             g_log = nullptr;
     }
@@ -406,7 +409,7 @@ int wmain(int argc, wchar_t** argv)
         }
     }
 
-    Out(stdout, ok ? L"[injector] Injection réussie. Log : %s\\warband_vr.log\n"
+    Out(stdout, ok ? L"[injector] Injection réussie. Log : %s\\warbandVRlog\\warband_vr.log\n"
                : L"[injector] Injection échouée.\n",
             dllPath.substr(0, dllPath.find_last_of(L'\\')).c_str());
 

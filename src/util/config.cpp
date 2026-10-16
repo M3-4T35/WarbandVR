@@ -180,7 +180,7 @@ const Definition kDefs[kCount] = {
      {"Every 10 s, writes to warband_vr.log the time spent per frame by the game, the renderer and the GPU.",
       "Toutes les 10 s, ecrit dans warband_vr.log le temps passe par image par le jeu, le rendu et le GPU."}},
     {"Advanced", "true_stereo", kAdvanced,
-     {"True stereo (experimental)", "Vraie stereo (experimental)"}, Kind::Bool, 0, 0, 1, kNone,
+     {"True stereo", "Vraie stereo"}, Kind::Bool, 1, 0, 1, kNone,
      {"Renders both eyes in every game frame instead of one eye per frame: correct depth while moving and up "
       "to twice the image rate when the game is CPU-limited. Off: alternate-eye rendering.",
       "Rend les deux yeux a chaque image du jeu au lieu d'un oeil par image : relief juste en mouvement et "
@@ -188,10 +188,10 @@ const Definition kDefs[kCount] = {
     {"Advanced", "debug_capture", kAdvanced,
      {"Diagnostic: capture both eyes", "Diagnostic : captures des deux yeux"}, Kind::Bool, 0, 0, 1, kNone,
      {"In stereo, every 15 s (10 times at most), saves the left eye, right eye and interface of one image pair "
-      "as PNG next to the DLL, and lists the rendered contexts in the log. Same as F11. The game freezes a few "
+      "as PNG in the warbandVRlog folder, and lists the rendered contexts in the log. Same as F11. The game freezes a few "
       "seconds during each capture.",
       "En stereo, toutes les 15 s (10 fois au plus), enregistre l'oeil gauche, l'oeil droit et l'interface d'une "
-      "meme paire en PNG a cote de la DLL, et liste les contextes rendus dans le log. Comme F11. Le jeu se fige "
+      "meme paire en PNG dans le dossier warbandVRlog, et liste les contextes rendus dans le log. Comme F11. Le jeu se fige "
       "quelques secondes pendant chaque capture."}},
 };
 
@@ -222,14 +222,15 @@ struct Defaults {
     Defaults() { ResetDefaults(); }
 } g_defaults;
 
-// Préréglages intégrés : écarts par rapport aux valeurs par défaut (validées au Quest 2 en PCVR)
+// Préréglages intégrés : écarts par rapport aux valeurs par défaut (validées au Quest 2 en PCVR ;
+// vraie stéréo par défaut depuis 0.3.1, validée sur PC avec le Steam Frame en streaming)
 struct PresetValue {
     Id id;
     float value;
 };
 // Validé au casque sur le Steam Frame autonome (Proton, Adreno 750, 72 Hz), graphismes du jeu au
 // minimum : vraie stéréo à 72 paires/s avec ~28 % de pixels en moins
-constexpr PresetValue kSteamFrameValues[] = {{Id::TrueStereo, 1}, {Id::RenderScale, 0.85f}};
+constexpr PresetValue kSteamFrameValues[] = {{Id::RenderScale, 0.85f}};
 
 struct BuiltinPreset {
     Text name;

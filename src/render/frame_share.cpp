@@ -61,14 +61,9 @@ void DumpSurface(IDirect3DDevice9* device, IDirect3DSurface9* surface, const cha
         LOG_RENDER("capture PNG impossible : D3DXSaveSurfaceToFileA introuvable");
         return;
     }
-    // Chemin : dossier de la DLL
+    // Chemin : dossier des logs (warbandVRlog, à côté de la DLL)
     char path[MAX_PATH]{};
-    HMODULE self = nullptr;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCSTR>(&DumpSurface), &self);
-    GetModuleFileNameA(self, path, MAX_PATH);
-    if (char* slash = strrchr(path, '\\'))
-        snprintf(slash + 1, MAX_PATH - (slash + 1 - path), "capture_%d_%s.png", g_dumpCount, name);
+    snprintf(path, MAX_PATH, "%scapture_%d_%s.png", vrlog::Dir(), g_dumpCount, name);
 
     // Une cible de rendu doit d'abord être copiée en mémoire système
     D3DSURFACE_DESC desc{};

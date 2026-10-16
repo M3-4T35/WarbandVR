@@ -1073,6 +1073,7 @@ void XrControls::UpdateCombat(XrSession session, XrSpace space, XrTime time, con
     if (view && !viewLong_ && viewNow - viewSinceMs_ >= kViewHoldMs) {
         viewLong_ = true;
         SendKeys({kKeyR});
+        NoteManualViewToggle();
         LOG_XR("stick droit tenu : vue 1re / 3e personne (touche R)");
     }
     if (!view && viewDown_ && !viewLong_) {
