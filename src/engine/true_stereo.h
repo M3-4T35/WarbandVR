@@ -35,4 +35,9 @@ struct SceneShadowState {
 SceneShadowState SaveSceneShadows(void* scene);
 void RestoreSceneShadows(void* scene, const SceneShadowState& afterFirst);
 
+// Thread de rendu, avant le rendu de chaque scène d'œil en vraie stéréo : la réfraction de l'eau
+// (screen_texture) est une copie de la scène prise au premier maillage d'eau, une seule fois par
+// image du renderer. Sans cela, le second œil rendu montrait sous son eau la scène du premier.
+void BeforeEyeScene(void* renderer);
+
 } // namespace engine::stereo

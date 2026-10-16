@@ -75,8 +75,12 @@ void ReleaseFrame(int slot);
 // Elles sont recréées à l'image suivante.
 void ReleaseForReset();
 
-// Debug (touche F11) : à la prochaine frame de l'œil gauche, enregistre l'image de la scène
-// et la texture d'interface en PNG à côté de la DLL
+// Thread de rendu : true une fois après le début d'une capture de diagnostic (pour écrire dans
+// le log les contextes rendus de cette image)
+bool TakeCensusRequest();
+
+// Debug (touche F11, ou automatique avec le réglage debug_capture) : enregistre en PNG à côté de
+// la DLL l'œil gauche, l'œil droit et l'interface d'une même paire, avec leurs vues dans le log
 void RequestDump();
 
 } // namespace render

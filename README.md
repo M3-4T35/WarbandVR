@@ -300,7 +300,7 @@ campaign, not in custom battles.
 |---|---|
 | F9 | Cycles the roll mode (for the session) |
 | F10 | Toggles the always-active melee weapon |
-| F11 | Screenshot (scene and interface) as PNG next to the DLL |
+| F11 | Screenshot of both eyes and the interface as PNG next to the DLL (freezes the game a few seconds) |
 
 ## Features
 
@@ -368,6 +368,8 @@ prefixed by module (`[xr]`, `[render]`, `[engine]`, `[input]`). The injector wri
 | The game language does not change | The module must provide that language (its `languages` folder) |
 | Attacks go in the wrong direction | Game option "attack direction: by mouse movement"; *Gesture* settings |
 | A feature stopped working after a WSE2 update | Look for "signature" in the log |
+| `warband_vr_injector.exe` disappeared, or an antivirus warning | False positive: Windows Defender may flag the injector (`Behavior:Win32/DefenseEvasion.A!ml`) because it loads a DLL into the game, which is how the mod works. Restore it from *Windows Security → Protection history* and add the mod folder to the exclusions |
+| An eye looks wrong, or the HUD is missing | Enable *Diagnostic: capture both eyes* (Advanced tab), reproduce, and attach the PNG files and `warband_vr.log` to your report |
 
 ## Building from source
 

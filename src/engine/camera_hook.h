@@ -16,4 +16,8 @@ bool GetGameCamera(rgl::Transform& out);
 // au stick ; la caméra du jeu, elle, suit la visée de la main gauche). false hors stéréo.
 bool GetBodyBack(rgl::Vector4& back);
 
+// Thread de rendu, au Present : fin de l'image pour le recensement des contextes rendus
+// (diagnostic). Écrit la liste dans le log si elle a changé, ou toujours avec force.
+void EndContextFrame(bool force);
+
 } // namespace engine

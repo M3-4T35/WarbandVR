@@ -304,7 +304,7 @@ en campagne, pas en bataille personnalisée.
 |---|---|
 | F9 | Change le mode de roulis (pour la session) |
 | F10 | Active ou désactive l'arme de mêlée toujours active |
-| F11 | Capture d'image (scène et interface) en PNG à côté de la DLL |
+| F11 | Capture des deux yeux et de l'interface en PNG à côté de la DLL (fige le jeu quelques secondes) |
 
 ## Fonctionnalités
 
@@ -374,6 +374,8 @@ préfixées par module (`[xr]`, `[render]`, `[engine]`, `[input]`). Le lanceur �
 | La langue du jeu ne change pas | Le module doit proposer cette langue (dossier `languages` du module) |
 | Les coups partent dans la mauvaise direction | Option du jeu « direction d'attaque : mouvement de la souris » ; réglages *Geste* |
 | Une fonction ne marche plus après une mise à jour de WSE2 | Cherchez « signature » dans le log |
+| `warband_vr_injector.exe` a disparu, ou alerte de l'antivirus | Faux positif : Windows Defender peut signaler l'injecteur (`Behavior:Win32/DefenseEvasion.A!ml`) parce qu'il charge une DLL dans le jeu, ce qui est le principe du mod. Restaurez-le depuis *Sécurité Windows → Historique de protection* et ajoutez le dossier du mod aux exclusions |
+| Un œil a l'air faux, ou le HUD manque | Activez *Diagnostic : captures des deux yeux* (onglet Avancé), reproduisez le problème et joignez les PNG et `warband_vr.log` à votre signalement |
 
 ## Compiler depuis les sources
 

@@ -1,5 +1,6 @@
 #include "render/frame_share.h"
 #include "render/ui_redirect.h"
+#include "util/config.h"
 #include "util/log.h"
 
 #include <d3d9.h>
@@ -8,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <utility>
 
 namespace render {
 namespace {
@@ -38,6 +40,15 @@ RenderView g_firstMainView;  // vue de la première
 bool g_loggedFirstEye = false;
 std::atomic<bool> g_dumpRequested{false};
 int g_dumpCount = 0;
+// Capture de diagnostic : les deux yeux d'une même paire (et l'interface), qui arrivent à des
+// moments différents (rendu alterné : deux Present ; vraie stéréo : BeginMainScene puis Present)
+uint64_t g_dumpPair = 0;      // paire en cours de capture, 0 : aucune
+int g_dumpDone = 0;           // 1 : œil gauche, 2 : œil droit, 4 : interface
+ULONGLONG g_lastAutoDump = 0; // captures automatiques (réglage debug_capture)
+int g_autoDumps = 0;
+constexpr int kMaxAutoDumps = 10;
+constexpr ULONGLONG kAutoDumpPeriodMs = 15000;
+bool g_censusRequested = false; // contextes de l'image à écrire dans le log (TakeCensusRequest)
 
 // Enregistre une surface (cible de rendu) en PNG via D3DX, déjà chargé par le jeu
 void DumpSurface(IDirect3DDevice9* device, IDirect3DSurface9* surface, const char* name)
@@ -152,6 +163,48 @@ void CopyToFreeSlot(IDirect3DDevice9* device, IDirect3DSurface9* source, const R
     }
 }
 
+// Capture de diagnostic d'une image d'œil, si elle appartient à la paire en cours de capture
+// (la première image d'œil après la demande fixe la paire). g_mutex tenu.
+void DumpEye(IDirect3DDevice9* device, IDirect3DSurface9* surface, const RenderView& v)
+{
+    if (!v.valid || v.eye < 0 || v.eye > 1)
+        return;
+    // Paire suivante, entière : l'œil rendu en premier peut déjà être passé (vraie stéréo : l'œil
+    // droit est copié avant le Present de l'œil gauche)
+    if (g_dumpRequested && !g_dumpPair) {
+        g_dumpRequested = false;
+        g_dumpPair = v.pair + 1;
+        g_dumpDone = 0;
+        LOG_RENDER("capture %d : paire %llu (%s)", g_dumpCount, static_cast<unsigned long long>(g_dumpPair),
+                   v.both ? "vraie stereo" : "rendu alterne");
+        return;
+    }
+    if (!g_dumpPair)
+        return;
+    if (v.pair > g_dumpPair + 4) { // paire jamais complétée (image perdue) : abandon
+        LOG_RENDER("capture %d : paire %llu incomplete (yeux 0x%X), abandonnee", g_dumpCount,
+                   static_cast<unsigned long long>(g_dumpPair), g_dumpDone);
+        g_dumpPair = 0;
+        ++g_dumpCount;
+        return;
+    }
+    const int bit = v.eye ? 2 : 1;
+    if (v.pair != g_dumpPair || (g_dumpDone & bit))
+        return;
+    g_censusRequested = true; // contextes de cette image dans le log
+    DumpSurface(device, surface, v.eye ? "oeil_droit" : "oeil_gauche");
+    constexpr float kDeg = 57.29578f;
+    LOG_RENDER("  oeil %s : position (%.3f %.3f %.3f), orientation (%.4f %.4f %.4f %.4f), champ g/d/h/b "
+               "%.1f/%.1f/%.1f/%.1f deg",
+               v.eye ? "droit" : "gauche", v.px, v.py, v.pz, v.qx, v.qy, v.qz, v.qw, v.angleLeft * kDeg,
+               v.angleRight * kDeg, v.angleUp * kDeg, v.angleDown * kDeg);
+    g_dumpDone |= bit;
+    if ((g_dumpDone & 3) == 3) {
+        g_dumpPair = 0;
+        ++g_dumpCount;
+    }
+}
+
 // Copies terminées côté GPU -> la plus récente de sa catégorie devient disponible
 void UpdateCompleted()
 {
@@ -180,6 +233,7 @@ void BeginMainScene(const RenderView& view)
             if (desc.Width == g_width && desc.Height == g_height) {
                 UpdateCompleted();
                 CopyToFreeSlot(g_owner, backBuffer, g_firstMainView);
+                DumpEye(g_owner, backBuffer, g_firstMainView);
                 if (!g_loggedFirstEye) {
                     LOG_RENDER("vraie stereo : image de l'oeil %s copiee avant le rendu de l'oeil %s (paire %llu)",
                                g_firstMainView.eye ? "droit" : "gauche", view.eye ? "droit" : "gauche",
@@ -234,15 +288,31 @@ void CaptureFrame(IDirect3DDevice9* device)
 
     UpdateCompleted();
     CopyToFreeSlot(device, backBuffer, g_pendingView);
+    // Captures de diagnostic : automatiques en stéréo (réglage debug_capture), ou F11
+    const ULONGLONG now = GetTickCount64();
+    if (g_pendingView.valid && config::GetBool(config::Id::DebugCapture) && g_autoDumps < kMaxAutoDumps &&
+        !g_dumpRequested && !g_dumpPair) {
+        if (!g_lastAutoDump)
+            g_lastAutoDump = now - kAutoDumpPeriodMs + 5000; // première capture 5 s après la stéréo
+        if (now - g_lastAutoDump >= kAutoDumpPeriodMs) {
+            g_lastAutoDump = now;
+            ++g_autoDumps;
+            g_dumpRequested = true;
+        }
+    }
+    if (!g_pendingView.valid && g_dumpRequested.exchange(false)) { // écran plat (menus)
+        DumpSurface(device, backBuffer, "ecran");
+        ++g_dumpCount;
+    }
+    DumpEye(device, backBuffer, g_pendingView);
     // Interface : rendu alterné, seulement celle des frames de l'œil gauche. Les éléments placés
     // d'après la caméra (noms au-dessus des alliés) changeraient sinon de position d'une frame
     // à l'autre et apparaîtraient en double. Vraie stéréo : une seule interface par image.
     IDirect3DSurface9* ui = UiSurfaceForFrame();
     const bool uiFrame = g_pendingView.eye == 0 || g_pendingView.both;
-    if (ui && uiFrame && g_dumpRequested.exchange(false)) {
-        DumpSurface(device, backBuffer, "scene_oeil_gauche");
+    if (ui && uiFrame && g_dumpPair == g_pendingView.pair && g_dumpPair && !(g_dumpDone & 4)) {
         DumpSurface(device, ui, "interface");
-        ++g_dumpCount;
+        g_dumpDone |= 4;
     }
     if (ui && uiFrame) {
         RenderView uiView;
@@ -325,6 +395,12 @@ bool AcquireLatestFrame(int eye, uint64_t newerThan, SharedFrame& out, uint64_t 
     out.seq = g_slots[slot].seq;
     out.view = g_slots[slot].view;
     return true;
+}
+
+bool TakeCensusRequest()
+{
+    std::lock_guard lock(g_mutex);
+    return std::exchange(g_censusRequested, false);
 }
 
 void RequestDump()

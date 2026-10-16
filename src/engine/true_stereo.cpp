@@ -25,6 +25,11 @@ constexpr char kSetSourceContextSig[] = "48 89 5C 24 08 57 48 81 EC 80 00 00 00 
 constexpr int kSourceOffsetImm = 16;
 // Dans setSourceContext : copie de m_flags (+0x1E8) puis call std::vector<T*>::operator= (lumières)
 constexpr char kPtrVectorAssignCallSig[] = "8B 87 E8 01 00 00 89 83 E8 01 00 00 E8";
+// rglRenderer::renderMesh, premier maillage d'eau de l'image : copie de la scène pour la réfraction
+// mov eax, [rcx+numéro d'image] ; cmp eax, [rcx+image de la copie] ; je ; mov [rcx+image de la
+// copie], eax ; mov rcx, [rcx+screen_texture]
+constexpr char kRefractionCopySig[] =
+    "8B 81 ?? ?? 00 00 3B 81 ?? ?? 00 00 0F 84 ?? ?? ?? ?? 89 81 ?? ?? 00 00 48 8B 89 ?? ?? 00 00";
 
 // this inutilisé : la fonction ne lit que les membres du gestionnaire par adresse globale
 using GetRenderContextFn = rgl::RenderContext*(__fastcall*)(void* resourceManager);
@@ -36,6 +41,9 @@ SetSourceContextFn g_setSourceContext = nullptr;
 PtrVectorAssignFn g_ptrVectorAssign = nullptr;
 bool g_available = false;
 uint32_t g_sourceOffset = 0; // rglRenderContext::m_source
+// rglRenderer : numéro de l'image et image de la dernière copie de réfraction (0 : introuvables)
+uint32_t g_frameNoOffset = 0;
+uint32_t g_refractionFrameOffset = 0;
 
 rgl::RenderContext* g_second = nullptr;
 bool g_loggedSetup = false;
@@ -71,6 +79,24 @@ bool Init()
     g_available = g_getRenderContext && g_setSourceContext && g_ptrVectorAssign;
     if (!g_available)
         LOG_ENGINE("vraie stereo indisponible (signature manquante) : rendu alterne seulement");
+
+    if (const auto* p = static_cast<const char*>(pattern::Find("copie de refraction de l'eau", kRefractionCopySig))) {
+        uint32_t frameNo = 0, copied = 0, copiedStore = 0;
+        memcpy(&frameNo, p + 2, sizeof(frameNo));
+        memcpy(&copied, p + 8, sizeof(copied));
+        memcpy(&copiedStore, p + 20, sizeof(copiedStore));
+        if (copied == copiedStore && frameNo != copied && frameNo < 0x10000 && copied < 0x10000) {
+            g_frameNoOffset = frameNo;
+            g_refractionFrameOffset = copied;
+            LOG_ENGINE("refraction de l'eau : numero d'image a rglRenderer+0x%X, copie a +0x%X", frameNo, copied);
+        } else {
+            LOG_ENGINE("ERREUR : copie de refraction : offsets invraisemblables (0x%X 0x%X 0x%X)", frameNo, copied,
+                       copiedStore);
+        }
+    }
+    if (!g_refractionFrameOffset)
+        LOG_ENGINE("vraie stereo : refraction de l'eau non corrigee (le second oeil peut montrer sous l'eau "
+                   "l'image du premier)");
     return g_available;
 }
 
@@ -111,7 +137,16 @@ rgl::RenderContext* PrepareSecond(rgl::RenderContext* main)
         }
         return nullptr;
     }
+    // Reflets de l'eau : rglScene::render garde son contexte de reflet dans m_waterReflectionRenderContext
+    // (créé à la première image, réutilisé ensuite). setSourceContext recopie celui du widget : les deux
+    // yeux partageraient un seul contexte de reflet, vidé et reconfiguré par le second remplissage (le
+    // renderer le rendait une fois plein avec la caméra de l'œil droit, une fois vide : pas de reflet
+    // dans l'œil gauche). Le second contexte garde le sien (nul la première fois : le moteur le crée).
+    rgl::RenderContext* ownReflection = second->waterReflection;
+    if (ownReflection == main->waterReflection)
+        ownReflection = nullptr;
     g_setSourceContext(second, main);
+    second->waterReflection = ownReflection;
     // Contexte mis en file lui-même, pas une copie du renderer : m_source nul
     *reinterpret_cast<rgl::RenderContext**>(reinterpret_cast<char*>(second) + g_sourceOffset) = nullptr;
     // Ce que setSourceContext ne recopie pas : cibles de rendu (scène HDR, profondeur...) et
@@ -140,7 +175,27 @@ rgl::RenderContext* PrepareSecond(rgl::RenderContext* main)
                    second->viewport.width, second->viewport.height);
         g_loggedSetup = true;
     }
+    // Contexte de reflet propre au second œil : une ligne quand il apparaît (reflets activés)
+    static rgl::RenderContext* loggedReflection = nullptr;
+    if (ownReflection && ownReflection != loggedReflection) {
+        LOG_ENGINE("vraie stereo : reflets de l'eau : contexte %p pour l'oeil gauche, %p pour l'oeil droit",
+                   main->waterReflection, ownReflection);
+        loggedReflection = ownReflection;
+    }
     return second;
+}
+
+void BeforeEyeScene(void* renderer)
+{
+    if (!renderer || !g_refractionFrameOffset)
+        return;
+    // Image de la dernière copie différente de l'image en cours : la copie est refaite au premier
+    // maillage d'eau de cette scène, avec l'image de cet œil
+    char* r = static_cast<char*>(renderer);
+    int32_t frameNo = 0;
+    memcpy(&frameNo, r + g_frameNoOffset, sizeof(frameNo));
+    const int32_t stale = frameNo - 1;
+    memcpy(r + g_refractionFrameOffset, &stale, sizeof(stale));
 }
 
 SceneShadowState SaveSceneShadows(void* scene)

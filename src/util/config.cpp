@@ -185,6 +185,14 @@ const Definition kDefs[kCount] = {
       "to twice the image rate when the game is CPU-limited. Off: alternate-eye rendering.",
       "Rend les deux yeux a chaque image du jeu au lieu d'un oeil par image : relief juste en mouvement et "
       "jusqu'a deux fois plus d'images quand le jeu est limite par le processeur. Desactive : rendu alterne."}},
+    {"Advanced", "debug_capture", kAdvanced,
+     {"Diagnostic: capture both eyes", "Diagnostic : captures des deux yeux"}, Kind::Bool, 0, 0, 1, kNone,
+     {"In stereo, every 15 s (10 times at most), saves the left eye, right eye and interface of one image pair "
+      "as PNG next to the DLL, and lists the rendered contexts in the log. Same as F11. The game freezes a few "
+      "seconds during each capture.",
+      "En stereo, toutes les 15 s (10 fois au plus), enregistre l'oeil gauche, l'oeil droit et l'interface d'une "
+      "meme paire en PNG a cote de la DLL, et liste les contextes rendus dans le log. Comme F11. Le jeu se fige "
+      "quelques secondes pendant chaque capture."}},
 };
 
 std::atomic<float> g_values[kCount];

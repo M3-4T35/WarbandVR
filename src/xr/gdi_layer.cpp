@@ -51,8 +51,9 @@ bool GdiLayer::Create()
     ci.width = width_;
     ci.height = height_;
     ci.faceCount = ci.arraySize = ci.mipCount = 1;
-    if (XR_FAILED(xrCreateSwapchain(session_, &ci, &swapchain_))) {
-        LOG_XR("ERREUR : swapchain du calque %s non creee", name_);
+    if (const XrResult r = xrCreateSwapchain(session_, &ci, &swapchain_); XR_FAILED(r)) {
+        LOG_XR("ERREUR : swapchain du calque %s non creee (XrResult %d, format %lld)", name_, static_cast<int>(r),
+               static_cast<long long>(format_));
         swapchain_ = XR_NULL_HANDLE;
         return false;
     }

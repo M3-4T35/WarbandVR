@@ -82,8 +82,9 @@ bool HandRenderer::Init(XrSession session, ID3D11Device* device, ID3D11DeviceCon
     ci.width = ci.height = size;
     ci.faceCount = ci.arraySize = ci.mipCount = 1;
     for (Eye& e : eyes_) {
-        if (XR_FAILED(xrCreateSwapchain(session, &ci, &e.swapchain))) {
-            LOG_XR("ERREUR : swapchain des manettes, manettes non affichees");
+        if (const XrResult r = xrCreateSwapchain(session, &ci, &e.swapchain); XR_FAILED(r)) {
+            LOG_XR("ERREUR : swapchain des manettes (XrResult %d, format %lld), manettes non affichees",
+                   static_cast<int>(r), static_cast<long long>(format));
             return false;
         }
         uint32_t count = 0;

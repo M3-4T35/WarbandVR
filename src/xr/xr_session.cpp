@@ -34,6 +34,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -140,6 +141,13 @@ public:
 
 private:
     bool Check(XrResult r, const char* what);
+    void ResultName(XrResult r, char (&name)[XR_MAX_RESULT_STRING_SIZE]) const;
+    struct NamedLayer {
+        const void* layer;
+        const char* name;
+    };
+    void LogLayers(const XrCompositionLayerBaseHeader* const* layers, uint32_t count,
+                   std::initializer_list<NamedLayer> names, bool hudMissing);
     bool CreateInstance();
     bool WaitForSystem();
     bool CreateDevice();
@@ -179,6 +187,11 @@ private:
     static constexpr int kUiChain = 2;
     EyeChain chains_[3];
     bool hudLogged_ = false;
+    // Diagnostic : calques soumis (une ligne quand la liste change) et échecs de xrEndFrame
+    std::string layersLogged_ = "-";
+    ULONGLONG layersLoggedAt_ = 0;
+    uint64_t endFrameErrors_ = 0;
+    ULONGLONG endFrameErrorAt_ = 0;
     int64_t format_ = 0;
     UINT scWidth_ = 0;
     UINT scHeight_ = 0;
@@ -248,10 +261,40 @@ bool XrApp::Check(XrResult r, const char* what)
     if (XR_SUCCEEDED(r))
         return true;
     char name[XR_MAX_RESULT_STRING_SIZE]{};
-    if (instance_ == XR_NULL_HANDLE || XR_FAILED(xrResultToString(instance_, r, name)))
-        snprintf(name, sizeof(name), "%d", static_cast<int>(r));
+    ResultName(r, name);
     LOG_XR("ERREUR : %s -> %s", what, name);
     return false;
+}
+
+// Calques soumis au casque : une ligne quand la liste change (au plus une par seconde ; le point
+// du curseur, qui apparaît et disparaît sans cesse, n'est pas compté)
+void XrApp::LogLayers(const XrCompositionLayerBaseHeader* const* layers, uint32_t count,
+                      std::initializer_list<NamedLayer> names, bool hudMissing)
+{
+    std::string desc;
+    for (uint32_t i = 0; i < count; ++i)
+        for (const NamedLayer& n : names)
+            if (n.layer == layers[i]) {
+                if (!desc.empty())
+                    desc += " + ";
+                desc += n.name;
+            }
+    if (desc.empty())
+        desc = "aucun";
+    if (hudMissing)
+        desc += " (pas d'image d'interface recue)";
+    const ULONGLONG now = GetTickCount64();
+    if (desc == layersLogged_ || now - layersLoggedAt_ < 1000)
+        return;
+    LOG_XR("calques soumis : %s", desc.c_str());
+    layersLogged_ = desc;
+    layersLoggedAt_ = now;
+}
+
+void XrApp::ResultName(XrResult r, char (&name)[XR_MAX_RESULT_STRING_SIZE]) const
+{
+    if (instance_ == XR_NULL_HANDLE || XR_FAILED(xrResultToString(instance_, r, name)))
+        snprintf(name, sizeof(name), "%d", static_cast<int>(r));
 }
 
 bool XrApp::CreateInstance()
@@ -397,6 +440,10 @@ bool XrApp::CreateSession()
     xrEnumerateSwapchainFormats(session_, 0, &count, nullptr);
     std::vector<int64_t> formats(count);
     xrEnumerateSwapchainFormats(session_, count, &count, formats.data());
+    std::string list;
+    for (int64_t f : formats)
+        list += (list.empty() ? "" : " ") + std::to_string(f);
+    LOG_XR("formats de swapchain proposes par le runtime (DXGI) : %s", list.empty() ? "aucun" : list.c_str());
     for (int64_t wanted : {DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM}) {
         for (int64_t f : formats)
             if (f == wanted && !format_)
@@ -1052,10 +1099,25 @@ void XrApp::RenderFrame()
     ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     ei.layerCount = layerCount;
     ei.layers = layers;
+    LogLayers(layers, layerCount, {{&proj, "projection"}, {&hud, "interface"}, {&radialLayer, "menu radial"},
+                                   {&quad, "ecran"}, {&keyboardLayer, "clavier"}, {&handsLayer, "manettes"}},
+              stereo && !chains_[kUiChain].hasContent);
     {
         Phase p("xrEndFrame");
-        if (!Check(xrEndFrame(session_, &ei), "xrEndFrame"))
+        const XrResult r = xrEndFrame(session_, &ei);
+        if (XR_FAILED(r)) {
+            // Chaque échec compte, une ligne au plus toutes les 5 s
+            ++endFrameErrors_;
+            const ULONGLONG now = GetTickCount64();
+            if (endFrameErrors_ == 1 || now - endFrameErrorAt_ >= 5000) {
+                char name[XR_MAX_RESULT_STRING_SIZE]{};
+                ResultName(r, name);
+                LOG_XR("ERREUR : xrEndFrame -> %s (%u calques, %llu echecs au total)", name, layerCount,
+                       static_cast<unsigned long long>(endFrameErrors_));
+                endFrameErrorAt_ = now;
+            }
             return;
+        }
     }
     // Hors affichage (SYNCHRONIZED), certains runtimes ne cadencent pas xrWaitFrame :
     // on évite de tourner à vide

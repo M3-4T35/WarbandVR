@@ -51,6 +51,7 @@ enum class Id {
     DebugLeftImageBothEyes,
     DebugFrameProfile,
     TrueStereo,
+    DebugCapture,
     Count
 };
 

@@ -28,6 +28,7 @@
 #include <atomic>
 #include <cmath>
 #include <mutex>
+#include <string>
 
 #define LOG_ENGINE(...) ::vrlog::Write("[engine]", __VA_ARGS__)
 
@@ -502,8 +503,64 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
     return result;
 }
 
+// --- Recensement des contextes rendus (diagnostic) ------------------------------------
+// Thread de rendu : sorte de chaque contexte de l'image en cours. Écrit dans le log quand la
+// composition change (au plus toutes les 2 s) et à chaque capture de diagnostic : on y voit ce
+// que les réglages graphiques ajoutent (reflets, ombres, post-effets) et l'ordre des yeux.
+std::string g_frameContexts, g_lastContexts;
+std::string g_lastToken;
+int g_tokenRepeat = 0;
+ULONGLONG g_lastContextsLogMs = 0;
+
+void FlushToken()
+{
+    if (g_lastToken.empty())
+        return;
+    if (!g_frameContexts.empty())
+        g_frameContexts += ' ';
+    g_frameContexts += g_lastToken;
+    if (g_tokenRepeat > 1)
+        g_frameContexts += " x" + std::to_string(g_tokenRepeat);
+    g_lastToken.clear();
+    g_tokenRepeat = 0;
+}
+
+void NoteContext(const rgl::RenderContext* ctx, const render::RenderView* view)
+{
+    if (!ctx)
+        return;
+    char token[96];
+    const bool scene = ctx->scene != nullptr, persp = ctx->camera.isPerspective;
+    if (view)
+        snprintf(token, sizeof(token), "scene-%s(paire %llu, %dx%d, pfx %s/%zu)", view->eye ? "D" : "G",
+                 static_cast<unsigned long long>(view->pair), ctx->viewport.width, ctx->viewport.height,
+                 ctx->postFxEnabled ? "oui" : "non",
+                 (static_cast<char*>(ctx->postFxNodes[1]) - static_cast<char*>(ctx->postFxNodes[0])) / sizeof(void*));
+    else if (IsUiContext(ctx))
+        snprintf(token, sizeof(token), "ui");
+    else if (scene && persp && ctx->isFinalRender)
+        snprintf(token, sizeof(token), "scene-sans-vue(%dx%d)", ctx->viewport.width, ctx->viewport.height);
+    else if (scene && persp)
+        snprintf(token, sizeof(token), "perspective(%dx%d, drapeaux 0x%X)", ctx->viewport.width,
+                 ctx->viewport.height, ctx->flags);
+    else if (scene)
+        snprintf(token, sizeof(token), "ortho(%dx%d)", ctx->viewport.width, ctx->viewport.height);
+    else
+        snprintf(token, sizeof(token), "%s(%dx%d)", persp ? "autre-persp" : "autre-ortho", ctx->viewport.width,
+                 ctx->viewport.height);
+    // Paire et taille changent à chaque image : la comparaison ne garde que la structure
+    if (token == g_lastToken) {
+        ++g_tokenRepeat;
+        return;
+    }
+    FlushToken();
+    g_lastToken = token;
+    g_tokenRepeat = 1;
+}
+
 uintptr_t __fastcall HkRenderContext(void* renderer, rgl::RenderContext* ctx, bool arg)
 {
+    bool noted = false;
     if (ctx && IsMainScene(ctx)) {
         bool found = false;
         render::RenderView view;
@@ -518,12 +575,16 @@ uintptr_t __fastcall HkRenderContext(void* renderer, rgl::RenderContext* ctx, bo
                 }
             }
         }
+        NoteContext(ctx, found ? &view : nullptr);
+        noted = true;
         if (found) {
             // Vraie stéréo : à la seconde scène de l'image, le back buffer contient l'image finale
             // de la première, copiée pour son œil
             render::BeginMainScene(view);
             render::SetPendingView(view);
             render::MarkStereoFrame();
+            if (view.both)
+                stereo::BeforeEyeScene(renderer);
         }
         if (found && !g_loggedPublish) {
             LOG_ENGINE("vue du casque retrouvee au rendu (contexte %p, thread %lu)", ctx,
@@ -534,6 +595,8 @@ uintptr_t __fastcall HkRenderContext(void* renderer, rgl::RenderContext* ctx, bo
             g_loggedOverwrite = true;
         }
     }
+    if (!noted)
+        NoteContext(ctx, nullptr);
     using render::profile::Ctx;
     const Ctx kind = ctx && IsMainScene(ctx) ? Ctx::Scene : ctx && IsUiContext(ctx) ? Ctx::Ui : Ctx::Other;
     render::profile::BeginContext(kind);
@@ -563,6 +626,32 @@ bool Hook(void* target, void* detour, void** original, const char* name)
 }
 
 } // namespace
+
+void EndContextFrame(bool force)
+{
+    FlushToken();
+    // Structure de l'image sans les numéros de paire (qui changent à chaque image)
+    std::string structure;
+    for (size_t i = 0; i < g_frameContexts.size(); ++i) {
+        if (g_frameContexts.compare(i, 7, "(paire ") == 0) {
+            const size_t comma = g_frameContexts.find(',', i);
+            if (comma != std::string::npos) {
+                structure += '(';
+                i = comma;
+                continue;
+            }
+        }
+        structure += g_frameContexts[i];
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (!g_frameContexts.empty() &&
+        (force || (structure != g_lastContexts && now - g_lastContextsLogMs >= 2000))) {
+        LOG_ENGINE("contextes de l'image : %s", g_frameContexts.c_str());
+        g_lastContexts = structure;
+        g_lastContextsLogMs = now;
+    }
+    g_frameContexts.clear();
+}
 
 bool InstallCameraHook()
 {

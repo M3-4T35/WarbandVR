@@ -5,6 +5,7 @@
 // dans d3d9.dll, puis on les détourne avec MinHook. Les index de vtable sont fixés par
 // l'ABI COM de d3d9.h, ils ne bougent pas avec les mises à jour de WSE2.
 #include "render/d3d9_hook.h"
+#include "engine/camera_hook.h"
 #include "render/frame_profile.h"
 #include "render/frame_share.h"
 #include "render/game_window.h"
@@ -107,6 +108,7 @@ void OnPresent(IDirect3DDevice9* device, const char* via)
     const double captureStart = profile::NowMs();
     SetGameDevice(device);
     CaptureFrame(device);
+    engine::EndContextFrame(TakeCensusRequest());
     EndFrame();
     profile::Capture(profile::NowMs() - captureStart);
 
