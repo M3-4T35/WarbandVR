@@ -369,7 +369,9 @@ int __fastcall HkCheckDefend(void* self, int agentA, int agentB, void* missile, 
     int result = g_checkDefend(self, agentA, agentB, missile, v1, v2, mode, out);
     const int player = PlayerAgentNo();
     rgl::Vector4 center;
+    // Mode souris : bouclier tenu comme dans le jeu (pas de manette pour le placer)
     if (agentB == player && result == kDefendNone && v1 && v2 && config::GetBool(config::Id::ShieldAlwaysActive) &&
+        !xr::IsMouseMode() &&
         PlayerHasShield() &&
         GetPlayerShieldCenter(center)) {
         const float d = DistancePointSegment(center, *v1, *v2);

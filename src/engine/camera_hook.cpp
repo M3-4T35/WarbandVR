@@ -45,6 +45,9 @@ constexpr char kRenderContextSig[] = "48 8B C4 44 88 40 18 55 41 57 48 8D A8 ?? 
 constexpr char kComputePlanesSig[] =
     "40 55 48 8B EC 48 83 EC 50 80 39 00 0F 29 7C 24 30 4C 8B D1 C7 41 04 06 00 00 00 0F 85";
 
+// mbMapWindow::updateCamera(float) : caméra de la carte du monde, à chaque image où la carte est active
+constexpr char kMapUpdateCameraSig[] = "48 8B C4 55 48 8D 68 D8 48 81 EC 20 01 00 00 F3 0F 10 1D";
+
 // Valeurs de retour transmises telles quelles (rax), quel que soit leur type réel
 using SceneRenderFn = uintptr_t(__fastcall*)(void* scene, rgl::RenderContext* ctx, bool arg);
 using RenderContextFn = uintptr_t(__fastcall*)(void* renderer, rgl::RenderContext* ctx, bool arg);
@@ -55,6 +58,104 @@ RenderContextFn g_renderContext = nullptr;
 ComputePlanesFn g_computePlanes = nullptr;
 void* g_sceneRenderTarget = nullptr;
 void* g_renderContextTarget = nullptr;
+
+// --- Carte du monde immersive ------------------------------------------------------------
+// mbMapWindow::updateCamera est appelé à chaque image où la carte est affichée : on y relève la
+// fenêtre. Sa scène est rendue par son widget de scène (m_sceneWidget, +0x70), dont le contexte de
+// rendu est rglSceneWidget::m_renderContext (+0x280).
+using MapUpdateCameraFn = void(__fastcall*)(void* window, float dt);
+MapUpdateCameraFn g_mapUpdateCamera = nullptr;
+void* g_mapUpdateCameraTarget = nullptr;
+constexpr size_t kMapSceneWidget = 0x70;     // mbMapWindow::m_sceneWidget
+constexpr size_t kMapCameraZoom = 0x2D0;     // mbMapWindow::m_cameraZoom (distance au point visé)
+constexpr size_t kWidgetRenderContext = 0x280; // rglSceneWidget::m_renderContext
+constexpr ULONGLONG kMapActiveMs = 250;
+std::atomic<char*> g_mapWindow{nullptr};
+std::atomic<ULONGLONG> g_mapFrameMs{0};
+bool g_loggedMap = false;
+
+void __fastcall HkMapUpdateCamera(void* window, float dt)
+{
+    g_mapUpdateCamera(window, dt);
+    g_mapWindow = static_cast<char*>(window);
+    g_mapFrameMs = GetTickCount64();
+}
+
+// Contexte de la scène de la carte, carte affichée et réglage actif
+bool IsMapContext(const rgl::RenderContext* ctx)
+{
+    char* window = g_mapWindow;
+    if (!window || GetTickCount64() - g_mapFrameMs > kMapActiveMs || !config::GetBool(config::Id::ImmersiveMap))
+        return false;
+    char* widget = *reinterpret_cast<char**>(window + kMapSceneWidget);
+    return widget && reinterpret_cast<const char*>(ctx) == widget + kWidgetRenderContext;
+}
+
+// Le jeu lit la caméra du contexte de son widget pour viser au curseur (getCursorRay : clic sur la
+// carte, infobulles) et pour placer ses libellés à l'écran (getScreenProjection). Ce contexte garde
+// la caméra du dernier œil rendu : le temps de ces appels, on lui remet celle du jeu.
+using CursorRayFn = uintptr_t(__fastcall*)(void* widget, void* nearPoint, void* farPoint);
+using ScreenProjectionFn = uintptr_t(__fastcall*)(void* widget, void* out, void* point);
+constexpr char kCursorRaySig[] = "48 8B C4 48 83 EC 58 80 B9 08 03 00 00 00 F3 0F 10 0D";
+constexpr char kScreenProjectionSig[] = "48 83 EC 18 80 B9 08 03 00 00 00 F3 41 0F 10 18";
+CursorRayFn g_cursorRay = nullptr;
+ScreenProjectionFn g_screenProjection = nullptr;
+void* g_cursorRayTarget = nullptr;
+void* g_screenProjectionTarget = nullptr;
+std::mutex g_mapCameraMutex;
+rgl::Camera g_mapGameCamera{}; // caméra du jeu de la dernière image stéréo de la carte
+bool g_haveMapCamera = false;
+int g_loggedMapSwaps = 0;
+
+class MapCameraSwap {
+public:
+    explicit MapCameraSwap(void* widget, const char* what)
+    {
+        char* window = g_mapWindow;
+        if (!widget || !window || *reinterpret_cast<void**>(window + kMapSceneWidget) != widget)
+            return;
+        std::lock_guard lock(g_mapCameraMutex);
+        if (!g_haveMapCamera)
+            return;
+        cam_ = &reinterpret_cast<rgl::RenderContext*>(static_cast<char*>(widget) + kWidgetRenderContext)->camera;
+        saved_ = *cam_;
+        *cam_ = g_mapGameCamera;
+        if (g_loggedMapSwaps < 2) {
+            ++g_loggedMapSwaps;
+            LOG_ENGINE("carte immersive : %s calcule avec la camera du jeu", what);
+        }
+    }
+    ~MapCameraSwap()
+    {
+        if (cam_)
+            *cam_ = saved_;
+    }
+    MapCameraSwap(const MapCameraSwap&) = delete;
+    MapCameraSwap& operator=(const MapCameraSwap&) = delete;
+
+private:
+    rgl::Camera* cam_ = nullptr;
+    rgl::Camera saved_{};
+};
+
+uintptr_t __fastcall HkCursorRay(void* widget, void* nearPoint, void* farPoint)
+{
+    MapCameraSwap swap(widget, "rayon du curseur");
+    return g_cursorRay(widget, nearPoint, farPoint);
+}
+
+uintptr_t __fastcall HkScreenProjection(void* widget, void* out, void* point)
+{
+    MapCameraSwap swap(widget, "projection a l'ecran");
+    return g_screenProjection(widget, out, point);
+}
+
+float MapZoom()
+{
+    char* window = g_mapWindow;
+    const float zoom = window ? *reinterpret_cast<float*>(window + kMapCameraZoom) : 0.0f;
+    return zoom > 0.1f && zoom < 10000.0f ? zoom : 30.0f;
+}
 
 // Dernières vues préparées par rglScene::render, retrouvées au rendu par l'orientation de
 // la caméra (le thread de jeu peut avoir une frame d'avance sur le thread de rendu)
@@ -172,15 +273,13 @@ rgl::Vector4 Combine(float a, const rgl::Vector4& x, float b, const rgl::Vector4
 // Remplace l'orientation de la caméra : cap du corps + orientation complète du casque.
 // Repère caméra (s droite, f haut, u arrière) = repère OpenXR (x, y, z). (bx, by) : arrière
 // horizontal unitaire du corps.
-void ApplyHead(rgl::Camera& cam, const xr::HeadPose& h, float bx, float by)
+// Orientation q (espace LOCAL) appliquée sur un repère de base (s0, f0, u0) = axes LOCAL x, y, z
+// dans le monde
+void ApplyOrientation(rgl::Camera& cam, float x, float y, float z, float w, const rgl::Vector4& s0,
+                      const rgl::Vector4& f0, const rgl::Vector4& u0)
 {
     rgl::Transform& t = cam.transform;
-    const rgl::Vector4 s0{-by, bx, 0, 0};
-    const rgl::Vector4 f0{0, 0, 1, 0};
-    const rgl::Vector4 u0{bx, by, 0, 0};
-
     // Matrice de rotation du quaternion : colonne j = axe j tourné
-    const float x = h.qx, y = h.qy, z = h.qz, w = h.qw;
     const float r00 = 1 - 2 * (y * y + z * z), r01 = 2 * (x * y - z * w), r02 = 2 * (x * z + y * w);
     const float r10 = 2 * (x * y + z * w), r11 = 1 - 2 * (x * x + z * z), r12 = 2 * (y * z - x * w);
     const float r20 = 2 * (x * z - y * w), r21 = 2 * (y * z + x * w), r22 = 1 - 2 * (x * x + y * y);
@@ -188,6 +287,11 @@ void ApplyHead(rgl::Camera& cam, const xr::HeadPose& h, float bx, float by)
     t.s = Combine(r00, s0, r10, f0, r20, u0, t.s.w);
     t.f = Combine(r01, s0, r11, f0, r21, u0, t.f.w);
     t.u = Combine(r02, s0, r12, f0, r22, u0, t.u.w);
+}
+
+void ApplyHead(rgl::Camera& cam, const xr::HeadPose& h, float bx, float by)
+{
+    ApplyOrientation(cam, h.qx, h.qy, h.qz, h.qw, {-by, bx, 0, 0}, {0, 0, 1, 0}, {bx, by, 0, 0});
 }
 
 // Un menu attend la souris (Tab, inventaire, dialogue...) : le jeu affiche son curseur.
@@ -231,6 +335,12 @@ bool g_bodyActive = false;
 float g_bodyYaw = 0;                    // cap du corps (angle du vecteur avant, monde Z haut)
 float g_kYaw = -0.003f, g_kPitch = -0.003f; // radians par unité de souris (mesurés)
 int g_lastDx = 0, g_lastDy = 0;         // mouvement injecté à la frame précédente
+// Mode souris : mouvement de la vraie souris depuis la dernière correction de visée (le jeu l'a déjà
+// appliqué à sa caméra), et dernier mouvement vertical : la hauteur n'est ramenée sur le regard
+// qu'après une pause, pour que le jeu lise bien le geste de la souris comme direction du coup
+int g_realSinceAimDx = 0, g_realSinceAimDy = 0;
+ULONGLONG g_lastRealDyMs = 0;
+constexpr ULONGLONG kMousePitchHoldMs = 300;
 float g_lastGameYaw = 0, g_lastGamePitch = 0;
 bool g_loggedAim = false;
 std::mutex g_bodyMutex;
@@ -261,25 +371,36 @@ void Calibrate(float& k, int injected, float observed)
 // Asservit la caméra du jeu sur la manette droite. forward : direction voulue (monde).
 void AimAtHand(const rgl::Transform& game, float bx, float by)
 {
+    const int realDx = g_realSinceAimDx, realDy = g_realSinceAimDy;
+    g_realSinceAimDx = g_realSinceAimDy = 0;
     xr::HandPose hands[2];
     xr::GetHands(hands);
     const rgl::Vector4 fwd{-game.u.x, -game.u.y, -game.u.z, 0};
     const float gameYaw = std::atan2(fwd.y, fwd.x);
     const float gamePitch = std::asin(std::clamp(fwd.z, -1.0f, 1.0f));
 
-    Calibrate(g_kYaw, g_lastDx, WrapAngle(gameYaw - g_lastGameYaw));
-    Calibrate(g_kPitch, g_lastDy, gamePitch - g_lastGamePitch);
+    // Le jeu a reçu notre correction précédente et la vraie souris
+    Calibrate(g_kYaw, g_lastDx + realDx, WrapAngle(gameYaw - g_lastGameYaw));
+    if (realDy == 0) // la vraie souris peut buter sur la limite de hauteur du jeu : mesure fausse
+        Calibrate(g_kPitch, g_lastDy, gamePitch - g_lastGamePitch);
     g_lastDx = g_lastDy = 0;
     g_lastGameYaw = gameYaw, g_lastGamePitch = gamePitch;
 
     if (xr::IsSwingBusy())
         return;
+    // Mode souris : visée au regard. Coup de mêlée tenu (bouton de la vraie souris) : la direction
+    // est choisie, on ne touche plus à la caméra jusqu'au relâchement
+    const bool mouse = xr::IsMouseMode();
+    const bool ranged = xr::IsBowMode() || xr::IsTriggerAttackMode();
+    if (mouse && !ranged && input::RealMouseButtonHeld())
+        return;
+    const bool holdPitch = mouse && GetTickCount64() - g_lastRealDyMs < kMousePitchHoldMs;
     // Direction voulue (espace LOCAL) : arc bandé (et 1 s après le tir) -> axe de la flèche
     // (main droite vers main gauche) ; sinon selon la source choisie (clic du stick gauche) : regard (centre de la
     // vue), main gauche ou main droite
     float dx, dy, dz;
     const bool bow = xr::IsBowMode();
-    if (bow && xr::IsBowAiming() && hands[0].valid && hands[1].valid) {
+    if (!mouse && bow && xr::IsBowAiming() && hands[0].valid && hands[1].valid) {
         dx = hands[0].px - hands[1].px, dy = hands[0].py - hands[1].py, dz = hands[0].pz - hands[1].pz;
         const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (len < 0.05f)
@@ -287,7 +408,7 @@ void AimAtHand(const rgl::Transform& game, float bx, float by)
         dx /= len, dy /= len, dz /= len;
     } else {
         float x, y, z, w;
-        const xr::AimSource source = xr::GetAimSource();
+        const xr::AimSource source = mouse ? xr::AimSource::Head : xr::GetAimSource();
         if (source == xr::AimSource::Head) {
             xr::HeadPose head;
             if (!xr::GetHeadPose(head))
@@ -310,7 +431,7 @@ void AimAtHand(const rgl::Transform& game, float bx, float by)
     int mx = 0, my = 0;
     if (std::fabs(errYaw) > kAimDeadzone)
         mx = std::clamp(static_cast<int>(std::lround(AimGain() * errYaw / g_kYaw)), -kAimMaxStep, kAimMaxStep);
-    if (std::fabs(errPitch) > kAimDeadzone)
+    if (std::fabs(errPitch) > kAimDeadzone && !holdPitch)
         my = std::clamp(static_cast<int>(std::lround(AimGain() * errPitch / g_kPitch)), -kAimMaxStep, kAimMaxStep);
     if (mx || my)
         input::InjectMouseMove(mx, my);
@@ -404,6 +525,110 @@ void PrepareEye(rgl::Camera& cam, const rgl::Transform& game, const xr::HeadPose
     }
 }
 
+// Carte du monde : œil placé à la caméra du jeu, orientation du casque autour de celle de la caméra
+// (son cap ET son inclinaison : regarder droit devant = la vue du jeu), position de l'œil dans
+// l'espace LOCAL multipliée par l'échelle de la carte (unités par mètre) : relief de maquette, et se
+// pencher rapproche. Roulis rendu tel quel (repère rigide, pas de compensation).
+void PrepareMapEye(rgl::Camera& cam, const rgl::Camera& game, const xr::HeadPose& head, int eyeIndex, float scale,
+                   bool both)
+{
+    const xr::EyeView& eye = head.eyes[eyeIndex];
+    const rgl::Transform& g = game.transform;
+    cam.transform = g;
+    ApplyOrientation(cam, eye.qx, eye.qy, eye.qz, eye.qw, g.s, g.f, g.u);
+    rgl::Transform& t = cam.transform;
+    t.o.x = g.o.x + scale * (eye.px * g.s.x + eye.py * g.f.x + eye.pz * g.u.x);
+    t.o.y = g.o.y + scale * (eye.px * g.s.y + eye.py * g.f.y + eye.pz * g.u.y);
+    t.o.z = g.o.z + scale * (eye.px * g.s.z + eye.py * g.f.z + eye.pz * g.u.z);
+    if (cam.znear > 0) {
+        cam.left = cam.znear * std::tan(eye.angleLeft);
+        cam.right = cam.znear * std::tan(eye.angleRight);
+        cam.top = cam.znear * std::tan(eye.angleUp);
+        cam.bottom = cam.znear * std::tan(eye.angleDown);
+    }
+    g_computePlanes(&cam);
+
+    render::RenderView view;
+    view.valid = cam.znear > 0 && game.znear > 0;
+    view.eye = eyeIndex;
+    view.pair = g_pairId;
+    view.both = both;
+    view.qx = eye.qx, view.qy = eye.qy, view.qz = eye.qz, view.qw = eye.qw;
+    view.px = eye.px, view.py = eye.py, view.pz = eye.pz;
+    view.angleLeft = eye.angleLeft;
+    view.angleRight = eye.angleRight;
+    view.angleUp = eye.angleUp;
+    view.angleDown = eye.angleDown;
+    view.map = true;
+    if (game.znear > 0) {
+        view.mapTanLeft = game.left / game.znear;
+        view.mapTanRight = game.right / game.znear;
+        view.mapTanUp = game.top / game.znear;
+        view.mapTanDown = game.bottom / game.znear;
+    }
+    std::lock_guard lock(g_mutex);
+    g_prepared[g_preparedNext] = {t.s, t.f, t.o, view};
+    g_preparedNext = (g_preparedNext + 1) % kPrepared;
+}
+
+uintptr_t RenderMapStereo(void* scene, rgl::RenderContext* ctx, bool arg, xr::HeadPose head)
+{
+    PollDebugKeys();
+    const double start = render::profile::NowMs();
+    rgl::Camera& cam = ctx->camera;
+    // Champ de vue du jeu élargi (réglage) : l'interface, posée sur ce champ de vue, couvre une plus grande
+    // part de la vue ; le jeu vise avec cette même caméra (getCursorRay), donc pointer reste juste
+    rgl::Camera game = cam;
+    const float uiScale = config::Get(config::Id::MapUiScale);
+    if (uiScale != 1.0f) {
+        game.left *= uiScale;
+        game.right *= uiScale;
+        game.top *= uiScale;
+        game.bottom *= uiScale;
+        g_computePlanes(&game);
+    }
+    {
+        std::lock_guard lock(g_mapCameraMutex);
+        g_mapGameCamera = game;
+        g_haveMapCamera = true;
+    }
+    const float scale = MapZoom() / config::Get(config::Id::MapDistance);
+    if (!g_loggedMap) {
+        LOG_ENGINE("carte du monde immersive (contexte %p) : distance de la camera %.1f, echelle %.1f unites par "
+                   "metre, champ de vue %.0f degres (jeu x %.2f)",
+                   ctx, MapZoom(), scale,
+                   game.znear > 0 ? 2 * std::atan(game.right / game.znear) * 180 / kPi : 0.0f, uiScale);
+        g_loggedMap = true;
+    }
+    uintptr_t result;
+    rgl::RenderContext* second = stereo::Enabled() ? stereo::PrepareSecond(ctx) : nullptr;
+    if (second) {
+        g_indexInPair = 0;
+        ++g_pairId;
+        PrepareMapEye(cam, game, head, 0, scale, true);
+        result = g_sceneRender(scene, ctx, arg);
+        const stereo::SceneShadowState shadows = stereo::SaveSceneShadows(scene);
+        PrepareMapEye(second->camera, game, head, 1, scale, true);
+        g_sceneRender(scene, second, arg);
+        stereo::RestoreSceneShadows(scene, shadows);
+    } else {
+        const int inPair = g_indexInPair;
+        g_indexInPair ^= 1;
+        const int eyeIndex = inPair ^ (config::GetBool(config::Id::EyeOrderSwap) ? 1 : 0);
+        if (inPair == 0) {
+            ++g_pairId;
+            g_pairHead = head;
+        } else {
+            head = g_pairHead;
+        }
+        PrepareMapEye(cam, game, head, eyeIndex, scale, false);
+        result = g_sceneRender(scene, ctx, arg);
+    }
+    g_loggedApply = true;
+    render::profile::SceneFill(render::profile::NowMs() - start);
+    return result;
+}
+
 uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool arg)
 {
     if (ctx && IsMainScene(ctx)) {
@@ -420,14 +645,27 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
         configRoll = config::GetInt(config::Id::RollMode);
         g_rollMode = configRoll;
     }
+    // Vraie souris lue par le jeu pour cette image (déjà appliquée à sa caméra)
+    int realDx = 0, realDy = 0;
+    if (ctx && IsMainScene(ctx))
+        input::TakeRealMouseMotion(realDx, realDy);
     xr::HeadPose head;
-    const bool stereoScene = ctx && IsMainScene(ctx) && xr::GetHeadPose(head) && !MenuOpen();
-    if (ctx && IsMainScene(ctx) && !stereoScene) {
+    // Carte du monde immersive : en stéréo bien que le curseur soit affiché
+    const bool map = ctx && IsMainScene(ctx) && IsMapContext(ctx);
+    const bool stereoScene = ctx && IsMainScene(ctx) && xr::GetHeadPose(head) && (map || !MenuOpen());
+    if (ctx && IsMainScene(ctx) && (!stereoScene || map)) {
         g_bodyActive = false;
-        g_indexInPair = 0; // la stéréo reprendra sur une paire neuve
+        if (!stereoScene)
+            g_indexInPair = 0; // la stéréo reprendra sur une paire neuve
         std::lock_guard lock(g_bodyMutex);
         g_haveBody = false;
     }
+    if (ctx && IsMainScene(ctx) && !(stereoScene && map)) {
+        std::lock_guard lock(g_mapCameraMutex);
+        g_haveMapCamera = false;
+    }
+    if (stereoScene && map)
+        return RenderMapStereo(scene, ctx, arg, head);
     if (!stereoScene) {
         if (ctx && IsMainScene(ctx)) {
             const double start = render::profile::NowMs();
@@ -443,12 +681,20 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
     rgl::Camera& cam = ctx->camera;
     const rgl::Transform game = cam.transform;
 
-    // Cap du corps : initialisé sur celui du jeu, puis tourné au stick
+    // Cap du corps : initialisé sur celui du jeu, puis tourné au stick (ou à la souris)
     if (!g_bodyActive) {
         g_bodyYaw = std::atan2(-game.u.y, -game.u.x);
         g_bodyActive = true;
         g_lastDx = g_lastDy = 0;
+        g_realSinceAimDx = g_realSinceAimDy = 0;
+        realDx = realDy = 0;
     }
+    // Mode souris : le corps tourne avec la caméra du jeu, de ce que la souris lui a fait tourner
+    g_realSinceAimDx += realDx, g_realSinceAimDy += realDy;
+    if (realDy)
+        g_lastRealDyMs = GetTickCount64();
+    if (xr::IsMouseMode())
+        g_bodyYaw += g_kYaw * realDx;
     g_bodyYaw = WrapAngle(g_bodyYaw + xr::TakeTurn());
     const float bx = -std::cos(g_bodyYaw), by = -std::sin(g_bodyYaw);
     {
@@ -678,6 +924,24 @@ bool InstallCameraHook()
         return false;
     }
     g_sceneRenderTarget = sceneRender;
+
+    // Carte du monde immersive (facultative : sans elle, la carte reste sur l'écran virtuel)
+    void* mapCamera = pattern::Find("mbMapWindow::updateCamera", kMapUpdateCameraSig);
+    void* cursorRay = pattern::Find("rglSceneWidget::getCursorRay", kCursorRaySig);
+    void* screenProjection = pattern::Find("rglSceneWidget::getScreenProjection", kScreenProjectionSig);
+    if (!mapCamera || !cursorRay || !screenProjection) {
+        LOG_ENGINE("carte du monde immersive desactivee (signature manquante)");
+        return true;
+    }
+    if (Hook(cursorRay, &HkCursorRay, reinterpret_cast<void**>(&g_cursorRay), "rglSceneWidget::getCursorRay"))
+        g_cursorRayTarget = cursorRay;
+    if (Hook(screenProjection, &HkScreenProjection, reinterpret_cast<void**>(&g_screenProjection),
+             "rglSceneWidget::getScreenProjection"))
+        g_screenProjectionTarget = screenProjection;
+    // La carte ne passe en stéréo que si le jeu peut viser et placer ses libellés avec sa caméra
+    if (g_cursorRayTarget && g_screenProjectionTarget &&
+        Hook(mapCamera, &HkMapUpdateCamera, reinterpret_cast<void**>(&g_mapUpdateCamera), "mbMapWindow::updateCamera"))
+        g_mapUpdateCameraTarget = mapCamera;
     return true;
 }
 
@@ -699,7 +963,8 @@ bool GetGameCamera(rgl::Transform& out)
 
 void RemoveCameraHook()
 {
-    for (void** target : {&g_sceneRenderTarget, &g_renderContextTarget}) {
+    for (void** target : {&g_mapUpdateCameraTarget, &g_cursorRayTarget, &g_screenProjectionTarget,
+                          &g_sceneRenderTarget, &g_renderContextTarget}) {
         if (*target) {
             MH_DisableHook(*target);
             MH_RemoveHook(*target);

@@ -13,7 +13,9 @@ a DLL is injected into the game at launch. No game or WSE2 file is modified.
   headset.
 - Physical combat with the controllers: gesture attacks, always-active blade and shield,
   two-handed grip for two-handed weapons and polearms, two-handed archery.
-- Menus, world map, inventory and dialogues on a virtual screen, with a laser pointer.
+- **Immersive campaign map** in 3D around you; menus, inventory and dialogues on a virtual
+  screen, with a laser pointer.
+- Also playable with **mouse and keyboard** (headset only, no controllers).
 - Troop orders through a radial menu, for every module.
 - **Launcher**: module, game language, presets and every setting (VR and Warband graphics)
   before each game.
@@ -205,7 +207,9 @@ for the modules that provide that language.
 | | Game window at headset resolution | Yes |
 | | **Render scale** (resolution per eye / recommended resolution) | 1 |
 | | Game frame rate limit (0 = automatic, locked to the headset) | 0 |
-| Controls | Stick turning (degrees/s) | 143 |
+| | **Immersive campaign map** / its distance / interface size | Yes / 1 m / 1.5 |
+| Controls | **Input**: auto / VR controllers / mouse and keyboard | Auto |
+| | Stick turning (degrees/s) | 143 |
 | | **Stick turning mode**: smooth / snap | Smooth |
 | | Snap turning: step | 30° |
 | | Turning stick deadzone | 0.2 |
@@ -223,6 +227,7 @@ for the modules that provide that language.
 | | Bow: maximum precision | 110 % |
 | Advanced | Aim: servo gain | 0.5 |
 | | **True stereo** | Yes |
+| | Virtual screen drawn with the controllers: auto (SteamVR) / always / never | Auto |
 | | Diagnostics: right eye first, left image in both eyes, frame timings in the log | No |
 
 ## Controls
@@ -231,7 +236,7 @@ Controls are given for **Meta Touch** controllers. Valve Index, HTC Vive and Win
 Reality controllers have equivalent bindings. SteamVR presents the Steam Frame controllers as
 Touch controllers, and also lets you remap the buttons.
 
-### Menus, world map, inventory (virtual screen)
+### Menus, inventory (virtual screen)
 
 | Button | Action |
 |---|---|
@@ -246,6 +251,31 @@ Touch controllers, and also lets you remap the buttons.
 
 When the game asks for text (character name, for instance), a **virtual keyboard** appears
 under the screen, in your Windows keyboard layout.
+
+### World map (immersive)
+
+The campaign map is shown **in 3D around you**, from the game camera: looking straight ahead
+gives the game's usual view, turn your head to look around, lean in to get closer (the map looks
+like a scale model; its size follows the game zoom). The map interface (buttons, date, tooltips)
+floats in front of you, aligned with the map: **point at a place on the map** and pull the trigger
+to travel there, exactly as with the mouse. The same buttons as the virtual screen apply (stick up
+/ down = zoom, left / right = rotate the camera). Off in the settings (*Immersive campaign map*):
+the map stays on the virtual screen. *Interface size* widens the map camera's field of view: the
+interface and the clickable area get bigger and stay aligned with the map.
+
+### Mouse and keyboard (no controllers)
+
+You can play with the headset on and the mouse and keyboard, without controllers (setting
+*Input*; in *Auto*, the last device used wins: moving the mouse switches to it, picking up a
+controller switches back).
+
+- The game keys work as usual (WASD, Tab, Escape, R, F1-F4, number keys...).
+- **The mouse turns the body** (left / right) and picks the **attack direction** as in the normal
+  game; the buttons attack, block, draw the bow, shoot.
+- **The gaze aims**: the crosshair stays in the centre of your view, also for the bow and the
+  crossbow. The vertical aim follows your head a moment after a vertical mouse movement.
+- In menus and on the map, the mouse moves a cursor on the virtual screen.
+- **Home** recenters the view.
 
 ### Combat, towns, walking
 

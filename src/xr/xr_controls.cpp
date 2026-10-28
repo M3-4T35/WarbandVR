@@ -370,7 +370,6 @@ bool XrControls::Update(XrSession session, XrSpace space, XrTime time, const XrP
     sync.activeActionSets = &active;
     xrSyncActions(session, &sync);
     ProcessKeyQueue();
-    UpdateMenuButton(GetBool(session, combat ? escape_ : menuEscape_, XR_NULL_PATH));
 
     // Profil de manette réellement utilisé par le runtime (une fois)
     if (!loggedProfile_) {
@@ -387,6 +386,15 @@ bool XrControls::Update(XrSession session, XrSpace space, XrTime time, const XrP
         }
     }
 
+    // Souris et clavier : les manettes ne commandent plus rien (ni affichées ni pointées)
+    if (UpdateInputMode(space, time, combat)) {
+        handState_[0].valid = handState_[1].valid = false;
+        rayLength_ = 0;
+        keyboardHover_ = keyboardClick_ = false;
+        return false;
+    }
+    UpdateMenuButton(GetBool(session, combat ? escape_ : menuEscape_, XR_NULL_PATH));
+
     bool onScreen = false;
     if (combat) {
         handState_[0].valid = handState_[1].valid = false; // pas de manettes affichées en combat
@@ -396,6 +404,71 @@ bool XrControls::Update(XrSession session, XrSpace space, XrTime time, const XrP
         UpdateMenu(session, space, time, focused, screenActive, screen, hit, onScreen);
     }
     return onScreen;
+}
+
+// Commandes : réglage input_mode, ou en auto le dernier périphérique utilisé. Souris : mouvement ou
+// clic de la vraie souris, ou plus aucune manette suivie depuis 2 s. Manettes : l'une d'elles
+// déplacée de 15 cm (prise en main ; posées, elles restent immobiles). true = souris et clavier.
+bool XrControls::UpdateInputMode(XrSpace space, XrTime time, bool combat)
+{
+    constexpr float kPickUpDistance = 0.15f;
+    constexpr unsigned long long kMouseWake = 150; // activité de la souris sur une fenêtre de 1 s
+    constexpr ULONGLONG kNoHandsMs = 2000;
+    const ULONGLONG now = GetTickCount64();
+    const unsigned long long activity = input::RealMouseActivity();
+    const int setting = config::GetInt(config::Id::InputMode);
+    bool mouse = mouseMode_;
+    const char* why = nullptr;
+    if (setting == 1) {
+        mouse = false, why = "reglage";
+    } else if (setting == 2) {
+        mouse = true, why = "reglage";
+    } else {
+        bool anyHand = false, pickedUp = false;
+        const XrSpace* spaces = combat ? combatHandSpaces_ : aimSpaces_;
+        const XrSpaceLocationFlags needed = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+        for (int h = 0; h < 2; ++h) {
+            XrSpaceLocation l{XR_TYPE_SPACE_LOCATION};
+            if (spaces[h] == XR_NULL_HANDLE || XR_FAILED(xrLocateSpace(spaces[h], space, time, &l)) ||
+                (l.locationFlags & needed) != needed) {
+                anchorValid_[h] = false;
+                continue;
+            }
+            anyHand = true;
+            const XrVector3f& p = l.pose.position;
+            if (!anchorValid_[h]) {
+                anchor_[h] = p;
+                anchorValid_[h] = true;
+            } else {
+                const float dx = p.x - anchor_[h].x, dy = p.y - anchor_[h].y, dz = p.z - anchor_[h].z;
+                pickedUp = pickedUp || dx * dx + dy * dy + dz * dz > kPickUpDistance * kPickUpDistance;
+            }
+        }
+        if (now - mouseMarkMs_ >= 1000) {
+            mouseMark_ = activity;
+            mouseMarkMs_ = now;
+        }
+        noHandsSinceMs_ = anyHand ? 0 : noHandsSinceMs_ ? noHandsSinceMs_ : now;
+        if (!mouse && activity - mouseMark_ > kMouseWake)
+            mouse = true, why = "souris utilisee";
+        else if (!mouse && noHandsSinceMs_ && now - noHandsSinceMs_ > kNoHandsMs)
+            mouse = true, why = "aucune manette suivie";
+        else if (mouse && pickedUp)
+            mouse = false, why = "manette prise en main";
+    }
+    if (mouse != mouseMode_ || !inputModeLogged_) {
+        if (mouse != mouseMode_)
+            ReleaseAll();
+        // Manettes posées : leur position actuelle devient la référence de la prise en main
+        anchorValid_[0] = anchorValid_[1] = false;
+        mouseMark_ = activity;
+        mouseMarkMs_ = now;
+        mouseMode_ = mouse;
+        inputModeLogged_ = true;
+        SetMouseMode(mouse);
+        LOG_XR("commandes : %s (%s)", mouse ? "souris et clavier" : "manettes VR", why ? why : "demarrage");
+    }
+    return mouseMode_;
 }
 
 void XrControls::UpdateMenu(XrSession session, XrSpace space, XrTime time, bool /*focused*/, bool screenActive,

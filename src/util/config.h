@@ -22,7 +22,11 @@ enum class Id {
     ResizeWindow,
     RenderScale,
     GameFpsLimit,
+    ImmersiveMap,
+    MapDistance,
+    MapUiScale,
     // Contrôles
+    InputMode,
     TurnSpeed,
     TurnMode,
     SnapAngle,
@@ -51,6 +55,7 @@ enum class Id {
     DebugLeftImageBothEyes,
     DebugFrameProfile,
     TrueStereo,
+    ScreenInHandsLayer,
     DebugCapture,
     Count
 };

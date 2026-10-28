@@ -69,6 +69,12 @@ bool IsTwoHandGrip();
 // Visée de l'arc à deux mains : corde tirée, ou moins d'une seconde après le tir
 bool IsBowAiming();
 
+// Commandes souris et clavier (réglage input_mode, ou en auto le dernier périphérique utilisé) :
+// la souris tourne le corps et choisit la direction des coups, le regard vise, pas de manettes.
+// Décidé par le thread XR, lu par tout thread.
+void SetMouseMode(bool on);
+bool IsMouseMode();
+
 // Source du réticule (visée du jeu) : regard (centre de la vue, défaut), main gauche, main
 // droite. Changée au clic du stick gauche.
 enum class AimSource { Head, LeftHand, RightHand };

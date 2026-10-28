@@ -13,6 +13,7 @@
 #include "render/d3d9_hook.h"
 #include "render/frame_share.h"
 #include "render/game_window.h"
+#include "input/pointer.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_hands.h"
@@ -186,6 +187,22 @@ private:
     };
     static constexpr int kUiChain = 2;
     EyeChain chains_[3];
+    // Écran virtuel dessiné dans le calque des manettes (réglage screen_in_hands_layer, auto sous
+    // SteamVR, qui affiche les calques quad par-dessus les calques de projection) : copies lisibles par
+    // shader de l'image plate (0) et de l'interface (1), avec mipmaps
+    struct PanelCopy {
+        ID3D11Texture2D* texture = nullptr;
+        ID3D11ShaderResourceView* srv = nullptr;
+        UINT width = 0, height = 0;
+        bool hasContent = false;
+    };
+    PanelCopy panels_[2];
+    bool steamVR_ = false;
+    int panelModeLogged_ = -1;
+    bool panelFailed_ = false;
+    bool ScreenInHandsLayer();
+    void CopyPanel(PanelCopy& p, ID3D11Texture2D* src, UINT w, UINT h);
+    void DestroyPanels();
     bool hudLogged_ = false;
     // Diagnostic : calques soumis (une ligne quand la liste change) et échecs de xrEndFrame
     std::string layersLogged_ = "-";
@@ -214,6 +231,11 @@ private:
     VirtualKeyboard keyboard_;
     RadialMenu radial_;
     bool keyboardLogged_ = false;
+    bool mapLogged_ = false; // carte du monde immersive affichée (journal)
+    bool homeDown_ = false; // touche Origine (Home) : recentrage au clavier
+    bool cursorClipped_ = false;
+    ULONGLONG cursorClipMs_ = 0;
+    void UpdateCursorClip();
     XrSwapchain cursorSwapchain_ = XR_NULL_HANDLE;
     bool cursorReady_ = false;
     bool cursorFailed_ = false;
@@ -329,6 +351,7 @@ bool XrApp::CreateInstance()
     xrGetInstanceProperties(instance_, &props);
     LOG_XR("runtime : %s %u.%u.%u", props.runtimeName, XR_VERSION_MAJOR(props.runtimeVersion),
            XR_VERSION_MINOR(props.runtimeVersion), XR_VERSION_PATCH(props.runtimeVersion));
+    steamVR_ = strstr(props.runtimeName, "SteamVR") != nullptr;
     LOG_XR("sortie audio du casque : %s", hasAudioGuid_ ? "donnee par le runtime (XR_OCULUS_audio_device_guid)"
                                                          : "sortie Windows par defaut");
     return true;
@@ -469,6 +492,34 @@ bool XrApp::CreateSession()
     LOG_XR("session creee, format de swapchain %lld%s", format_,
            format_ == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? " (BGRA sRGB)" : " (BGRA, couleurs possiblement fausses)");
     return true;
+}
+
+// Mode souris : le vrai curseur Windows, invisible dans le casque, est gardé sur la partie visible
+// de la fenêtre du jeu (sinon un clic sur un autre écran ou une autre fenêtre ferait perdre la
+// souris au jeu). Rafraîchi toutes les 500 ms ; relâché hors mode souris ou jeu au second plan.
+void XrApp::UpdateCursorClip()
+{
+    const ULONGLONG now = GetTickCount64();
+    if (now - cursorClipMs_ < 500)
+        return;
+    cursorClipMs_ = now;
+    HWND hwnd = render::GameWindow();
+    RECT rect{};
+    bool clip = IsMouseMode() && hwnd && GetForegroundWindow() == hwnd && GetWindowRect(hwnd, &rect);
+    if (clip) {
+        MONITORINFO mi{sizeof(mi)};
+        clip = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi) &&
+               IntersectRect(&rect, &rect, &mi.rcMonitor);
+    }
+    if (clip) {
+        ClipCursor(&rect);
+        if (!cursorClipped_)
+            LOG_XR("mode souris : curseur Windows garde sur la fenetre du jeu");
+        cursorClipped_ = true;
+    } else if (cursorClipped_) {
+        ClipCursor(nullptr);
+        cursorClipped_ = false;
+    }
 }
 
 // Recentrage : l'espace de référence prend la position actuelle de la tête et sa direction
@@ -689,6 +740,66 @@ void XrApp::DestroySwapchains()
     scWidth_ = scHeight_ = 0;
 }
 
+bool XrApp::ScreenInHandsLayer()
+{
+    const int mode = config::GetInt(config::Id::ScreenInHandsLayer);
+    const bool on = !panelFailed_ && (mode == 1 || (mode == 0 && steamVR_));
+    if (mode != panelModeLogged_) {
+        LOG_XR("ecran virtuel et interface de la carte %s", on ? "dessines dans le calque des manettes (manettes devant)"
+                                                               : "dans des calques separes");
+        panelModeLogged_ = mode;
+    }
+    return on;
+}
+
+void XrApp::CopyPanel(PanelCopy& p, ID3D11Texture2D* src, UINT w, UINT h)
+{
+    if (!p.texture || p.width != w || p.height != h) {
+        if (p.srv)
+            p.srv->Release();
+        if (p.texture)
+            p.texture->Release();
+        p = PanelCopy{};
+        D3D11_TEXTURE2D_DESC td{};
+        td.Width = w;
+        td.Height = h;
+        td.MipLevels = 0; // chaîne complète : l'écran est réduit dans le calque des manettes
+        td.ArraySize = 1;
+        td.Format = static_cast<DXGI_FORMAT>(format_);
+        td.SampleDesc.Count = 1;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+        HRESULT hr = device_->CreateTexture2D(&td, nullptr, &p.texture);
+        if (SUCCEEDED(hr))
+            hr = device_->CreateShaderResourceView(p.texture, nullptr, &p.srv);
+        if (FAILED(hr)) {
+            LOG_XR("ERREUR : copie de l'ecran pour le calque des manettes (0x%08lX) : calques separes",
+                   static_cast<unsigned long>(hr));
+            if (p.texture)
+                p.texture->Release();
+            p = PanelCopy{};
+            panelFailed_ = true;
+            return;
+        }
+        p.width = w;
+        p.height = h;
+    }
+    context_->CopySubresourceRegion(p.texture, 0, 0, 0, 0, src, 0, nullptr);
+    context_->GenerateMips(p.srv);
+    p.hasContent = true;
+}
+
+void XrApp::DestroyPanels()
+{
+    for (PanelCopy& p : panels_) {
+        if (p.srv)
+            p.srv->Release();
+        if (p.texture)
+            p.texture->Release();
+        p = PanelCopy{};
+    }
+}
+
 // Swapchain du point de curseur : disque blanc cerclé de sombre, alpha prémultiplié,
 // rempli une fois (le calque réutilise la dernière image libérée)
 bool XrApp::EnsureCursor()
@@ -851,6 +962,8 @@ bool XrApp::CopyGameFrame(int eye, int target)
                 chain.view = frame.view;
                 chain.view.eye = eye;
                 chain.copiedSeq = frame.seq;
+                if ((eye == render::kEyeFlat || eye == render::kEyeUi) && ScreenInHandsLayer())
+                    CopyPanel(panels_[eye == render::kEyeUi ? 1 : 0], src, frame.width, frame.height);
             }
             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             Phase p("xrReleaseSwapchainImage");
@@ -987,6 +1100,16 @@ void XrApp::RenderFrame()
 
     const bool eyesReady = chains_[0].hasContent && chains_[1].hasContent && chains_[0].view.eye == 0 &&
                            chains_[1].view.eye == 1 && chains_[0].view.valid && chains_[1].view.valid;
+    // Carte du monde immersive : la scène en stéréo, son interface posée dans l'espace LOCAL à la place de
+    // l'image du jeu (pointée comme l'écran virtuel)
+    const bool mapView = fs.shouldRender && stereo && eyesReady && chains_[0].view.map;
+    const render::RenderView& mapCam = chains_[0].view;
+    const float mapDistance = config::Get(config::Id::MapDistance);
+    const float mapWidth = mapDistance * (mapCam.mapTanRight - mapCam.mapTanLeft);
+    const float mapHeight = mapDistance * (mapCam.mapTanUp - mapCam.mapTanDown);
+    // Écran virtuel / interface de la carte dans le calque des manettes plutôt qu'en calque quad
+    const bool inHands = ScreenInHandsLayer();
+    bool hudInHands = false;
     if (fs.shouldRender && stereo && eyesReady) {
         // Chaque œil : sa dernière image, avec la pose et le champ de vue de son rendu (le
         // runtime corrige l'écart avec la pose réelle au moment de l'affichage)
@@ -1016,13 +1139,20 @@ void XrApp::RenderFrame()
         const EyeChain& ui = chains_[kUiChain];
         if (ui.hasContent && ui.view.eye == render::kEyeUi) {
             hud.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-            hud.space = viewSpace_;
+            hud.space = mapView ? localSpace_ : viewSpace_;
             hud.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
             hud.subImage = {ui.swapchain, fullRect, 0};
             hud.pose.orientation.w = 1.0f;
-            hud.pose.position = {0.0f, 0.0f, -HudDistance()};
-            hud.size = {HudWidth(), HudWidth() * scHeight_ / scWidth_};
-            layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hud);
+            hud.pose.position = {0.0f, 0.0f, mapView ? -mapDistance : -HudDistance()};
+            hud.size = mapView ? XrExtent2Df{mapWidth, mapHeight} : XrExtent2Df{HudWidth(), HudWidth() * scHeight_ / scWidth_};
+            if (mapView != mapLogged_) {
+                LOG_XR("carte du monde immersive %s (interface %.2f x %.2f m a %.1f m)", mapView ? "affichee" : "quittee",
+                       mapWidth, mapHeight, mapDistance);
+                mapLogged_ = mapView;
+            }
+            hudInHands = mapView && inHands && panels_[1].hasContent;
+            if (!hudInHands)
+                layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hud);
             if (!hudLogged_) {
                 LOG_XR("interface affichee dans un calque separe (%.1f m a %.1f m)", HudWidth(), HudDistance());
                 hudLogged_ = true;
@@ -1037,8 +1167,12 @@ void XrApp::RenderFrame()
     // Écran virtuel (menus) : l'image plate, pilotée par le pointeur des manettes
     const bool screenActive =
         fs.shouldRender && !stereo && chains_[0].hasContent && chains_[0].view.eye == render::kEyeFlat;
+    // Écran pointé par les manettes ou la souris : l'écran virtuel, ou l'interface de la carte
+    const bool pointerScreen = screenActive || mapView;
     XrControls::Screen screen{ScreenDistance(), ScreenWidth(),
                               scWidth_ ? ScreenWidth() * scHeight_ / scWidth_ : 0.0f};
+    if (mapView)
+        screen = {mapDistance, mapWidth, mapHeight};
     // Clavier virtuel sous l'écran quand un champ de texte du jeu a le focus
     screen.keyboard = screenActive && engine::TextInputActive();
     if (screen.keyboard) {
@@ -1054,7 +1188,7 @@ void XrApp::RenderFrame()
     XrVector3f hit{};
     const bool pointing = controls_.Update(session_, localSpace_, fs.predictedDisplayTime,
                                            eyesValid ? &loc.pose : nullptr, state_ == XR_SESSION_STATE_FOCUSED,
-                                           stereo && eyesReady, screenActive, screen, hit);
+                                           stereo && eyesReady && !mapView, pointerScreen, screen, hit);
     // Menu radial des ordres (combat), devant les yeux, par-dessus l'interface
     if (fs.shouldRender && stereo && eyesReady && controls_.GetRadial().open &&
         radial_.Layer(viewSpace_, controls_.GetRadial(), radialLayer))
@@ -1062,12 +1196,25 @@ void XrApp::RenderFrame()
     else if (fs.shouldRender && stereo && eyesReady && controls_.Hint() &&
              radial_.HintLayer(viewSpace_, controls_.Hint(), radialLayer))
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&radialLayer);
-    if (controls_.TakeRecenterRequest())
+    // Recentrage : bouton menu tenu, ou touche Origine (Home) du clavier, jeu au premier plan
+    const bool home = render::GameWindow() && GetForegroundWindow() == render::GameWindow() &&
+                      (GetAsyncKeyState(VK_HOME) & 0x8000);
+    if (home && !homeDown_)
+        LOG_XR("touche Origine : recentrage");
+    if (controls_.TakeRecenterRequest() || (home && !homeDown_))
         Recenter(fs.predictedDisplayTime);
+    homeDown_ = home;
+    UpdateCursorClip();
+    // Mode souris : curseur des menus (déplacé par la vraie souris) sur l'écran virtuel
+    float mouseU = 0, mouseV = 0;
+    const bool mouseCursor = pointerScreen && IsMouseMode() && input::GetMouseCursor(mouseU, mouseV);
+    if (mouseCursor)
+        hit = {(mouseU - 0.5f) * screen.width, (0.5f - mouseV) * screen.height, -screen.distance};
     float kbU = 0, kbV = 0;
     const bool onKeyboard = screen.keyboard && controls_.KeyboardHover(kbU, kbV);
     if (screen.keyboard)
         keyboard_.Update(onKeyboard, kbU, kbV, onKeyboard && controls_.KeyboardClick());
+    const bool screenInHands = screenActive && inHands && panels_[0].hasContent;
     if (screenActive) {
         quad.space = localSpace_;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -1075,14 +1222,29 @@ void XrApp::RenderFrame()
         quad.pose.orientation.w = 1.0f;
         quad.pose.position = {0.0f, 0.0f, -ScreenDistance()};
         quad.size = {screen.width, screen.height};
-        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+        if (!screenInHands)
+            layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
         if (screen.keyboard &&
             keyboard_.Layer(localSpace_, {0.0f, screen.keyboardY, -screen.distance}, screen.keyboardWidth, keyboardLayer))
             layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&keyboardLayer);
-        // Manettes 3D et rayon, puis le point du curseur par-dessus
-        if (eyesValid && hands_.Render(eyeViews, controls_, localSpace_, handsLayer, handViews))
+    }
+    if (pointerScreen) {
+        // Manettes 3D et rayon (devant l'écran s'il est dans le même calque), puis le point du curseur
+        // par-dessus
+        HandRenderer::Panel panel;
+        if (screenInHands)
+            panel = {panels_[0].srv, {0.0f, 0.0f, -screen.distance}, screen.width, screen.height, true};
+        else if (hudInHands)
+            panel = {panels_[1].srv, {0.0f, 0.0f, -mapDistance}, mapWidth, mapHeight, false};
+        const bool withPanel = screenInHands || hudInHands;
+        if (eyesValid &&
+            hands_.Render(eyeViews, controls_, localSpace_, handsLayer, handViews, withPanel ? &panel : nullptr))
             layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&handsLayer);
-        if ((pointing || onKeyboard) && EnsureCursor()) {
+        else if (screenInHands) // repli : calque quad
+            layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
+        else if (hudInHands)
+            layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hud);
+        if ((pointing || onKeyboard || mouseCursor) && EnsureCursor()) {
             cursor.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
             cursor.space = localSpace_;
             cursor.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -1141,11 +1303,16 @@ void XrApp::RenderFrame()
 void XrApp::Shutdown()
 {
     DestroySwapchains();
+    if (cursorClipped_) {
+        ClipCursor(nullptr);
+        cursorClipped_ = false;
+    }
     if (cursorSwapchain_ != XR_NULL_HANDLE)
         xrDestroySwapchain(cursorSwapchain_);
     cursorSwapchain_ = XR_NULL_HANDLE;
     cursorReady_ = false;
     hands_.Shutdown();
+    DestroyPanels();
     keyboard_.Shutdown();
     radial_.Shutdown();
     controls_.Shutdown();
@@ -1198,9 +1365,12 @@ void XrApp::Run()
         return;
     }
     controls_.Init(instance_, session_);
-    // Manettes : géométrie simple, une résolution modérée suffit
+    // Manettes : géométrie simple, une résolution modérée suffit ; pleine résolution si l'écran virtuel
+    // est dessiné dans leur calque (texte des menus)
     const uint32_t handSize =
-        std::clamp<uint32_t>(recommendedWidth_ ? recommendedWidth_ * 6 / 10 : 1024, 512, 1536);
+        ScreenInHandsLayer()
+            ? std::clamp<uint32_t>(recommendedWidth_ ? recommendedWidth_ : 2048, 512, 2560)
+            : std::clamp<uint32_t>(recommendedWidth_ ? recommendedWidth_ * 6 / 10 : 1024, 512, 1536);
     hands_.Init(session_, device_, context_, format_, handSize);
     keyboard_.Init(session_, device_, context_, format_);
     radial_.Init(session_, device_, context_, format_);
@@ -1308,6 +1478,18 @@ void NoteManualViewToggle()
 bool TakeManualViewToggle()
 {
     return g_manualViewToggle.exchange(false);
+}
+
+std::atomic<bool> g_mouseMode{false};
+
+void SetMouseMode(bool on)
+{
+    g_mouseMode = on;
+}
+
+bool IsMouseMode()
+{
+    return g_mouseMode;
 }
 
 void SetTriggerAttackMode(bool on)

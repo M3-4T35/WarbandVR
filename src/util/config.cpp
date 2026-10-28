@@ -82,7 +82,34 @@ const Definition kDefs[kCount] = {
       "sustains). Otherwise: fixed limit in images per second.",
       "0 : automatique, cadence reguliere calee sur le casque (2, 1 ou 2/3 images par rafraichissement, selon "
       "ce que le PC tient). Sinon : limite fixe en images par seconde."}},
+    {"Display", "immersive_map", kDisplay, {"Immersive campaign map", "Carte de campagne immersive"}, Kind::Bool, 1, 0,
+     1, kNone,
+     {"The world map is shown in 3D around you, from the game camera: look around, lean in. Its interface "
+      "floats in front of you, aligned with the map. Off: map on the virtual screen.",
+      "La carte du monde est affichee en 3D autour de vous, depuis la camera du jeu : regardez autour, "
+      "penchez-vous. Son interface flotte devant vous, alignee sur la carte. Desactive : carte sur l'ecran "
+      "virtuel."}},
+    {"Display", "map_distance", kDisplay, {"Immersive map: distance (m)", "Carte immersive : distance (m)"},
+     Kind::Float, 1.0f, 0.3f, 5.0f, kNone,
+     {"Apparent distance of the point the map camera looks at, and of the map interface. Shorter: a "
+      "smaller model, more depth.",
+      "Distance apparente du point que regarde la camera de la carte, et de son interface. Plus court : "
+      "maquette plus petite, plus de relief."}},
+    {"Display", "map_ui_scale", kDisplay, {"Immersive map: interface size", "Carte immersive : taille de l'interface"},
+     Kind::Float, 1.5f, 1.0f, 2.5f, kNone,
+     {"Widens the map camera's field of view: the interface (buttons, labels, clickable area) covers more of "
+      "your view and stays aligned with the map. 1 = the game's field of view.",
+      "Elargit le champ de vue de la camera de la carte : l'interface (boutons, libelles, zone cliquable) "
+      "couvre une plus grande part de la vue et reste alignee sur la carte. 1 = champ de vue du jeu."}},
     // Contrôles
+    {"Controls", "input_mode", kControls, {"Input", "Commandes"}, Kind::Choice, 0, 0, 2,
+     {"Auto|VR controllers|Mouse and keyboard", "Auto|Manettes VR|Souris et clavier"},
+     {"Mouse and keyboard: the mouse turns the body and picks the attack direction, the gaze aims (crosshair "
+      "at the centre of the view), Home recenters. Auto: whichever was used last (mouse moved, or a "
+      "controller picked up).",
+      "Souris et clavier : la souris tourne le corps et choisit la direction des coups, le regard vise "
+      "(reticule au centre de la vue), Origine (Home) recentre. Auto : le dernier utilise (souris bougee, ou "
+      "manette prise en main)."}},
     {"Controls", "turn_speed", kControls, {"Stick turning (degrees/s)", "Rotation au stick (degres/s)"}, Kind::Float,
      143.0f, 10.0f, 720.0f, kNone,
      {"Body turning speed, right stick fully pushed.", "Vitesse de rotation du corps, stick droit a fond."}},
@@ -185,6 +212,15 @@ const Definition kDefs[kCount] = {
       "to twice the image rate when the game is CPU-limited. Off: alternate-eye rendering.",
       "Rend les deux yeux a chaque image du jeu au lieu d'un oeil par image : relief juste en mouvement et "
       "jusqu'a deux fois plus d'images quand le jeu est limite par le processeur. Desactive : rendu alterne."}},
+    {"Advanced", "screen_in_hands_layer", kAdvanced,
+     {"Virtual screen drawn with the controllers", "Ecran virtuel dessine avec les manettes"}, Kind::Choice, 0,
+     0, 2, {"Auto (SteamVR)|Always|Never", "Auto (SteamVR)|Toujours|Jamais"},
+     {"Draws the virtual screen and the map interface in the same layer as the controllers, so they appear in "
+      "front of it. Needed on SteamVR, which shows flat layers above everything. Never: separate layer "
+      "(sharper).",
+      "Dessine l'ecran virtuel et l'interface de la carte dans le meme calque que les manettes, pour qu'elles "
+      "passent devant. Necessaire sous SteamVR, qui affiche les calques plats par-dessus tout. Jamais : calque "
+      "separe (plus net)."}},
     {"Advanced", "debug_capture", kAdvanced,
      {"Diagnostic: capture both eyes", "Diagnostic : captures des deux yeux"}, Kind::Bool, 0, 0, 1, kNone,
      {"In stereo, every 15 s (10 times at most), saves the left eye, right eye and interface of one image pair "

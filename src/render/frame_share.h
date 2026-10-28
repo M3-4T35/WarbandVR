@@ -30,6 +30,10 @@ struct RenderView {
     float qx = 0, qy = 0, qz = 0, qw = 1; // orientation déclarée (espace LOCAL d'OpenXR)
     float px = 0, py = 0, pz = 0;         // position de l'œil (espace LOCAL)
     float angleLeft = 0, angleRight = 0, angleUp = 0, angleDown = 0; // radians
+    // Carte du monde immersive : vue centrale du jeu (tangentes de son champ de vue, gauche et bas
+    // négatives), le long de -z de l'espace LOCAL : l'interface y est posée, alignée sur le monde
+    bool map = false;
+    float mapTanLeft = 0, mapTanRight = 0, mapTanUp = 0, mapTanDown = 0;
 };
 
 struct SharedFrame {

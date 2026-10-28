@@ -33,6 +33,21 @@ float4 ps(VSOut i) : SV_Target {
     float light = 0.45 + 0.55 * saturate(dot(normalize(i.nrm), normalize(float3(0.3, 1.0, 0.5))));
     return float4(color.rgb * light * color.a, color.a); // alpha prémultiplié
 }
+// Panneau plat : rectangle unitaire tiré du numéro de sommet (bande de 2 triangles), color.a = opaque
+Texture2D panelTexture : register(t0);
+SamplerState panelSampler : register(s0);
+struct PanelOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+PanelOut panel_vs(uint id : SV_VertexID) {
+    float2 c = float2(id & 1, id >> 1);
+    PanelOut o;
+    o.pos = mul(float4(c.x - 0.5, 0.5 - c.y, 0, 1), mvp);
+    o.uv = c;
+    return o;
+}
+float4 panel_ps(PanelOut i) : SV_Target {
+    float4 c = panelTexture.Sample(panelSampler, i.uv);
+    return color.a > 0.5 ? float4(c.rgb, 1) : c;
+}
 )";
 
 struct Vertex {
@@ -135,11 +150,22 @@ bool HandRenderer::CreateShaders()
     }
     ID3DBlob* vsBlob = nullptr;
     ID3DBlob* psBlob = nullptr;
+    ID3DBlob* panelVsBlob = nullptr;
+    ID3DBlob* panelPsBlob = nullptr;
     ID3DBlob* errors = nullptr;
     HRESULT hr = compile(kShader, sizeof(kShader) - 1, "hands", nullptr, nullptr, "vs", "vs_5_0", 0, 0, &vsBlob, &errors);
     if (SUCCEEDED(hr))
         hr = compile(kShader, sizeof(kShader) - 1, "hands", nullptr, nullptr, "ps", "ps_5_0", 0, 0, &psBlob, &errors);
+    if (SUCCEEDED(hr))
+        hr = compile(kShader, sizeof(kShader) - 1, "hands", nullptr, nullptr, "panel_vs", "vs_5_0", 0, 0,
+                     &panelVsBlob, &errors);
+    if (SUCCEEDED(hr))
+        hr = compile(kShader, sizeof(kShader) - 1, "hands", nullptr, nullptr, "panel_ps", "ps_5_0", 0, 0,
+                     &panelPsBlob, &errors);
     if (FAILED(hr)) {
+        for (ID3DBlob* b : {psBlob, panelVsBlob})
+            if (b)
+                b->Release();
         LOG_XR("ERREUR : compilation des shaders des manettes : %s",
                errors ? static_cast<const char*>(errors->GetBufferPointer()) : "?");
         if (errors)
@@ -150,6 +176,15 @@ bool HandRenderer::CreateShaders()
     }
     device_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs_);
     device_->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &ps_);
+    device_->CreateVertexShader(panelVsBlob->GetBufferPointer(), panelVsBlob->GetBufferSize(), nullptr, &panelVs_);
+    device_->CreatePixelShader(panelPsBlob->GetBufferPointer(), panelPsBlob->GetBufferSize(), nullptr, &panelPs_);
+    panelVsBlob->Release();
+    panelPsBlob->Release();
+    D3D11_SAMPLER_DESC sampler{};
+    sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    sampler.MaxLOD = D3D11_FLOAT32_MAX;
+    device_->CreateSamplerState(&sampler, &sampler_);
     const D3D11_INPUT_ELEMENT_DESC elements[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0},
@@ -200,7 +235,7 @@ bool HandRenderer::CreateShaders()
     rs.CullMode = D3D11_CULL_NONE;
     rs.DepthClipEnable = TRUE;
     device_->CreateRasterizerState(&rs, &raster_);
-    return vs_ && ps_ && layout_ && vertices_ && indices_ && constants_ && depthState_ && raster_;
+    return vs_ && ps_ && panelVs_ && panelPs_ && sampler_ && layout_ && vertices_ && indices_ && constants_ && depthState_ && raster_;
 }
 
 void HandRenderer::DrawBox(const float world[16], const float viewProj[16], const float rotation[16],
@@ -218,9 +253,12 @@ void HandRenderer::DrawBox(const float world[16], const float viewProj[16], cons
 }
 
 bool HandRenderer::Render(const XrView eyes[2], const XrControls& pointer, XrSpace space,
-                          XrCompositionLayerProjection& layer, XrCompositionLayerProjectionView views[2])
+                          XrCompositionLayerProjection& layer, XrCompositionLayerProjectionView views[2],
+                          const Panel* panel)
 {
-    if (!ready_ || (!pointer.GetHand(0).valid && !pointer.GetHand(1).valid))
+    if (panel && !panel->srv)
+        panel = nullptr;
+    if (!ready_ || (!panel && !pointer.GetHand(0).valid && !pointer.GetHand(1).valid))
         return false;
 
     // Boîtes à dessiner : boîtier de chaque main, rayon de la main active
@@ -300,6 +338,28 @@ bool HandRenderer::Render(const XrView eyes[2], const XrControls& pointer, XrSpa
             kNear * std::tan(v.fov.angleUp), kNear, kFar);
         XMFLOAT4X4 viewProj;
         XMStoreFloat4x4(&viewProj, view * proj);
+        if (panel) {
+            // Panneau d'abord : les manettes passent devant au test de profondeur
+            Constants c{};
+            const XMMATRIX world = XMMatrixScaling(panel->width, panel->height, 1) *
+                                   XMMatrixTranslation(panel->center.x, panel->center.y, panel->center.z);
+            XMStoreFloat4x4(&c.mvp, XMMatrixTranspose(world * view * proj));
+            c.color[3] = panel->opaque ? 1.0f : 0.0f;
+            context_->UpdateSubresource(constants_, 0, nullptr, &c, 0, 0);
+            context_->IASetInputLayout(nullptr);
+            context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            context_->VSSetShader(panelVs_, nullptr, 0);
+            context_->PSSetShader(panelPs_, nullptr, 0);
+            context_->PSSetShaderResources(0, 1, &panel->srv);
+            context_->PSSetSamplers(0, 1, &sampler_);
+            context_->Draw(4, 0);
+            ID3D11ShaderResourceView* none = nullptr;
+            context_->PSSetShaderResources(0, 1, &none);
+            context_->IASetInputLayout(layout_);
+            context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context_->VSSetShader(vs_, nullptr, 0);
+            context_->PSSetShader(ps_, nullptr, 0);
+        }
         for (const Box& b : boxes)
             DrawBox(&b.world._11, &viewProj._11, &b.rotation._11, b.color);
 
@@ -343,6 +403,8 @@ void HandRenderer::Shutdown()
         e = Eye{};
     }
     for (IUnknown** p : {reinterpret_cast<IUnknown**>(&vs_), reinterpret_cast<IUnknown**>(&ps_),
+                         reinterpret_cast<IUnknown**>(&panelVs_), reinterpret_cast<IUnknown**>(&panelPs_),
+                         reinterpret_cast<IUnknown**>(&sampler_),
                          reinterpret_cast<IUnknown**>(&layout_), reinterpret_cast<IUnknown**>(&vertices_),
                          reinterpret_cast<IUnknown**>(&indices_), reinterpret_cast<IUnknown**>(&constants_),
                          reinterpret_cast<IUnknown**>(&depthState_), reinterpret_cast<IUnknown**>(&raster_)}) {

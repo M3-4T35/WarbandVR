@@ -21,10 +21,20 @@ public:
     bool Init(XrSession session, ID3D11Device* device, ID3D11DeviceContext* context, int64_t format, uint32_t size);
     void Shutdown();
 
-    // Rend les manettes pour les deux yeux (vues localisées dans l'espace du calque) et
-    // remplit le calque. false s'il n'y a rien à afficher.
+    // Panneau plat dessiné derrière les manettes, dans le même calque (écran virtuel, interface de la
+    // carte) : SteamVR affiche les calques quad par-dessus les calques de projection, quel que soit
+    // leur ordre. Centre dans l'espace du calque, face à +z, sans rotation.
+    struct Panel {
+        ID3D11ShaderResourceView* srv = nullptr;
+        XrVector3f center{};
+        float width = 0, height = 0;
+        bool opaque = true; // sinon alpha prémultiplié
+    };
+
+    // Rend les manettes (et le panneau) pour les deux yeux (vues localisées dans l'espace du calque)
+    // et remplit le calque. false s'il n'y a rien à afficher.
     bool Render(const XrView eyes[2], const XrControls& pointer, XrSpace space, XrCompositionLayerProjection& layer,
-                XrCompositionLayerProjectionView views[2]);
+                XrCompositionLayerProjectionView views[2], const Panel* panel = nullptr);
 
 private:
     struct Eye {
@@ -44,6 +54,9 @@ private:
     Eye eyes_[2];
     ID3D11VertexShader* vs_ = nullptr;
     ID3D11PixelShader* ps_ = nullptr;
+    ID3D11VertexShader* panelVs_ = nullptr;
+    ID3D11PixelShader* panelPs_ = nullptr;
+    ID3D11SamplerState* sampler_ = nullptr;
     ID3D11InputLayout* layout_ = nullptr;
     ID3D11Buffer* vertices_ = nullptr;
     ID3D11Buffer* indices_ = nullptr;

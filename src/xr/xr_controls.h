@@ -93,6 +93,7 @@ private:
     void UpdateCombat(XrSession session, XrSpace space, XrTime time, const XrPosef* head);
     bool UpdateSwing(XrSpace space, XrTime time, const XrPosef* head); // true : bouton d'attaque tenu
     void ReleaseAll();
+    bool UpdateInputMode(XrSpace space, XrTime time, bool combat); // true : souris et clavier
     void UpdateRadial(bool toggle, bool back, const XrVector2f& stick);
     void ProcessKeyQueue();
     void UpdateMenuButton(bool pressed);
@@ -138,6 +139,14 @@ private:
     XrSpace combatAimSpaces_[2]{};
 
     bool combatMode_ = false;
+    // Commandes souris et clavier (voir UpdateInputMode)
+    bool mouseMode_ = false;
+    bool inputModeLogged_ = false;
+    XrVector3f anchor_[2]{};
+    bool anchorValid_[2]{};
+    unsigned long long mouseMark_ = 0;
+    unsigned long long mouseMarkMs_ = 0;
+    unsigned long long noHandsSinceMs_ = 0;
 
     // État du menu
     Hand handState_[2];

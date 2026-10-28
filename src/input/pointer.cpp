@@ -3,6 +3,7 @@
 #include "render/game_window.h"
 #include "util/hook.h"
 #include "util/log.h"
+#include "xr/xr_session.h"
 
 #include <MinHook.h>
 #include <windows.h>
@@ -25,6 +26,27 @@ POINT g_client{}; // point visé, coordonnées clientes de la fenêtre du jeu
 bool g_loggedFirst = false;
 int g_loggedReads = 0;
 int g_loggedClicks = 0;
+// Mode souris : curseur à nous, déplacé par la vraie souris (le vrai curseur Windows ne peut pas
+// atteindre la partie de la fenêtre qui dépasse de l'écran)
+float g_mouseX = -1, g_mouseY = -1; // coordonnées clientes, -1 = pas encore placé
+bool g_mouseShown = false;
+bool g_loggedMouseCursor = false;
+
+// Fenêtre du jeu de la taille du casque (~2600 pixels de haut) : un mouvement de souris y couvre
+// la même part de l'écran que sur un bureau en 1080p
+void UpdateMouseCursor(HWND hwnd)
+{
+    int dx = 0, dy = 0;
+    TakeRealCursorMotion(dx, dy);
+    RECT client{};
+    if (!hwnd || !GetClientRect(hwnd, &client) || client.bottom <= 0)
+        return;
+    if (g_mouseX < 0)
+        g_mouseX = client.right / 2.0f, g_mouseY = client.bottom / 2.0f;
+    const float scale = client.bottom / 1080.0f;
+    g_mouseX = std::clamp(g_mouseX + dx * scale, 0.0f, client.right - 1.0f);
+    g_mouseY = std::clamp(g_mouseY + dy * scale, 0.0f, client.bottom - 1.0f);
+}
 
 BOOL WINAPI HkGetCursorPos(LPPOINT pt)
 {
@@ -42,6 +64,19 @@ BOOL WINAPI HkGetCursorPos(LPPOINT pt)
             }
             return TRUE;
         }
+        if (xr::IsMouseMode() && hwnd) {
+            UpdateMouseCursor(hwnd);
+            POINT p{static_cast<LONG>(g_mouseX), static_cast<LONG>(g_mouseY)};
+            ClientToScreen(hwnd, &p);
+            *pt = p;
+            g_mouseShown = true;
+            if (!g_loggedMouseCursor) {
+                LOG_INPUT("mode souris : curseur des menus deplace par la vraie souris");
+                g_loggedMouseCursor = true;
+            }
+            return TRUE;
+        }
+        g_mouseShown = false;
     }
     return g_getCursorPos(pt);
 }
@@ -136,6 +171,20 @@ void SetPointerButton(bool left, bool down)
                   client.y);
         ++g_loggedClicks;
     }
+}
+
+bool GetMouseCursor(float& u, float& v)
+{
+    HWND hwnd = render::GameWindow();
+    RECT client{};
+    if (!hwnd || !GetClientRect(hwnd, &client) || client.right <= 0 || client.bottom <= 0)
+        return false;
+    std::lock_guard lock(g_mutex);
+    if (!g_mouseShown || g_mouseX < 0)
+        return false;
+    u = g_mouseX / client.right;
+    v = g_mouseY / client.bottom;
+    return true;
 }
 
 void ScrollPointer(int notches)

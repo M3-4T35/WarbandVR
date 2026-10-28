@@ -17,4 +17,8 @@ void SetPointerTarget(bool onScreen, float u, float v);
 void SetPointerButton(bool left, bool down);
 void ScrollPointer(int notches);
 
+// Mode souris : position du curseur des menus (coordonnées normalisées de la zone cliente),
+// false s'il n'est pas utilisé
+bool GetMouseCursor(float& u, float& v);
+
 } // namespace input
