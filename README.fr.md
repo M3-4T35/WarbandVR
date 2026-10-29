@@ -16,7 +16,6 @@ Aucun fichier du jeu ni de WSE2 n'est modifié.
   deux mains des armes à deux mains et d'hast, tir à l'arc à deux mains.
 - **Carte de campagne immersive** en 3D autour de vous ; menus, inventaire et dialogues sur un
   écran virtuel, au pointeur.
-- Jouable aussi à la **souris et au clavier** (casque seul, sans manettes).
 - Ordres aux troupes par un menu radial, pour tous les modules.
 - **Lanceur** : module, langue du jeu, préréglages et tous les réglages (VR et graphismes de
   Warband) avant chaque partie.
@@ -211,8 +210,7 @@ prochain lancement, pour les modules qui proposent cette langue.
 | | **Échelle de rendu** (résolution par œil / résolution recommandée) | 1 |
 | | Limite d'images du jeu (0 = automatique, calée sur le casque) | 0 |
 | | **Carte de campagne immersive** / sa distance / taille de l'interface | Oui / 1 m / 1,5 |
-| Contrôles | **Commandes** : auto / manettes VR / souris et clavier | Auto |
-| | Rotation au stick (degrés/s) | 143 |
+| Contrôles | Rotation au stick (degrés/s) | 143 |
 | | **Mode de rotation** : continue / par crans | Continue |
 | | Rotation par crans : cran | 30° |
 | | Zone morte du stick de rotation | 0,2 |
@@ -266,20 +264,6 @@ virtuel (stick haut / bas = zoom, gauche / droite = rotation de la caméra). Dé
 réglages (*Carte de campagne immersive*) : la carte reste alors sur l'écran virtuel.
 *Taille de l'interface* élargit le champ de vue de la caméra de la carte : l'interface et la zone
 cliquable grandissent en restant alignées sur la carte.
-
-### Souris et clavier (sans manettes)
-
-On peut jouer casque sur la tête avec la souris et le clavier, sans manettes (réglage *Commandes* ;
-en *Auto*, le dernier périphérique utilisé l'emporte : bouger la souris passe à la souris, prendre
-une manette en main revient aux manettes).
-
-- Les touches du jeu marchent comme d'habitude (ZQSD, Tab, Échap, R, F1-F4, chiffres...).
-- **La souris tourne le corps** (gauche / droite) et choisit la **direction des coups** comme dans
-  le jeu normal ; ses boutons attaquent, bloquent, bandent l'arc, tirent.
-- **Le regard vise** : le réticule reste au centre de la vue, arc et arbalète compris. La visée en
-  hauteur revient sur la tête un instant après un mouvement vertical de la souris.
-- Dans les menus et sur la carte, la souris déplace un curseur sur l'écran virtuel.
-- **Origine (Home)** recentre la vue.
 
 ### Combat, villes, déplacements
 

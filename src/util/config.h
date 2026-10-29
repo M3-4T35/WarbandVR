@@ -26,7 +26,6 @@ enum class Id {
     MapDistance,
     MapUiScale,
     // Contrôles
-    InputMode,
     TurnSpeed,
     TurnMode,
     SnapAngle,

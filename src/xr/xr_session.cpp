@@ -13,7 +13,6 @@
 #include "render/d3d9_hook.h"
 #include "render/frame_share.h"
 #include "render/game_window.h"
-#include "input/pointer.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_hands.h"
@@ -232,10 +231,6 @@ private:
     RadialMenu radial_;
     bool keyboardLogged_ = false;
     bool mapLogged_ = false; // carte du monde immersive affichée (journal)
-    bool homeDown_ = false; // touche Origine (Home) : recentrage au clavier
-    bool cursorClipped_ = false;
-    ULONGLONG cursorClipMs_ = 0;
-    void UpdateCursorClip();
     XrSwapchain cursorSwapchain_ = XR_NULL_HANDLE;
     bool cursorReady_ = false;
     bool cursorFailed_ = false;
@@ -492,34 +487,6 @@ bool XrApp::CreateSession()
     LOG_XR("session creee, format de swapchain %lld%s", format_,
            format_ == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? " (BGRA sRGB)" : " (BGRA, couleurs possiblement fausses)");
     return true;
-}
-
-// Mode souris : le vrai curseur Windows, invisible dans le casque, est gardé sur la partie visible
-// de la fenêtre du jeu (sinon un clic sur un autre écran ou une autre fenêtre ferait perdre la
-// souris au jeu). Rafraîchi toutes les 500 ms ; relâché hors mode souris ou jeu au second plan.
-void XrApp::UpdateCursorClip()
-{
-    const ULONGLONG now = GetTickCount64();
-    if (now - cursorClipMs_ < 500)
-        return;
-    cursorClipMs_ = now;
-    HWND hwnd = render::GameWindow();
-    RECT rect{};
-    bool clip = IsMouseMode() && hwnd && GetForegroundWindow() == hwnd && GetWindowRect(hwnd, &rect);
-    if (clip) {
-        MONITORINFO mi{sizeof(mi)};
-        clip = GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi) &&
-               IntersectRect(&rect, &rect, &mi.rcMonitor);
-    }
-    if (clip) {
-        ClipCursor(&rect);
-        if (!cursorClipped_)
-            LOG_XR("mode souris : curseur Windows garde sur la fenetre du jeu");
-        cursorClipped_ = true;
-    } else if (cursorClipped_) {
-        ClipCursor(nullptr);
-        cursorClipped_ = false;
-    }
 }
 
 // Recentrage : l'espace de référence prend la position actuelle de la tête et sa direction
@@ -1196,20 +1163,8 @@ void XrApp::RenderFrame()
     else if (fs.shouldRender && stereo && eyesReady && controls_.Hint() &&
              radial_.HintLayer(viewSpace_, controls_.Hint(), radialLayer))
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&radialLayer);
-    // Recentrage : bouton menu tenu, ou touche Origine (Home) du clavier, jeu au premier plan
-    const bool home = render::GameWindow() && GetForegroundWindow() == render::GameWindow() &&
-                      (GetAsyncKeyState(VK_HOME) & 0x8000);
-    if (home && !homeDown_)
-        LOG_XR("touche Origine : recentrage");
-    if (controls_.TakeRecenterRequest() || (home && !homeDown_))
+    if (controls_.TakeRecenterRequest())
         Recenter(fs.predictedDisplayTime);
-    homeDown_ = home;
-    UpdateCursorClip();
-    // Mode souris : curseur des menus (déplacé par la vraie souris) sur l'écran virtuel
-    float mouseU = 0, mouseV = 0;
-    const bool mouseCursor = pointerScreen && IsMouseMode() && input::GetMouseCursor(mouseU, mouseV);
-    if (mouseCursor)
-        hit = {(mouseU - 0.5f) * screen.width, (0.5f - mouseV) * screen.height, -screen.distance};
     float kbU = 0, kbV = 0;
     const bool onKeyboard = screen.keyboard && controls_.KeyboardHover(kbU, kbV);
     if (screen.keyboard)
@@ -1244,7 +1199,7 @@ void XrApp::RenderFrame()
             layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
         else if (hudInHands)
             layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&hud);
-        if ((pointing || onKeyboard || mouseCursor) && EnsureCursor()) {
+        if ((pointing || onKeyboard) && EnsureCursor()) {
             cursor.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
             cursor.space = localSpace_;
             cursor.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -1303,10 +1258,6 @@ void XrApp::RenderFrame()
 void XrApp::Shutdown()
 {
     DestroySwapchains();
-    if (cursorClipped_) {
-        ClipCursor(nullptr);
-        cursorClipped_ = false;
-    }
     if (cursorSwapchain_ != XR_NULL_HANDLE)
         xrDestroySwapchain(cursorSwapchain_);
     cursorSwapchain_ = XR_NULL_HANDLE;
@@ -1478,18 +1429,6 @@ void NoteManualViewToggle()
 bool TakeManualViewToggle()
 {
     return g_manualViewToggle.exchange(false);
-}
-
-std::atomic<bool> g_mouseMode{false};
-
-void SetMouseMode(bool on)
-{
-    g_mouseMode = on;
-}
-
-bool IsMouseMode()
-{
-    return g_mouseMode;
 }
 
 void SetTriggerAttackMode(bool on)

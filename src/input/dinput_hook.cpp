@@ -48,10 +48,6 @@ bool g_keys[256]{};                 // touches injectées tenues (codes DIK)
 // l'interface), comme une vraie souris qui alimente les deux : mouvement et molette sont
 // donc injectés dans chacune, indépendamment
 LONG g_stateDx = 0, g_stateDy = 0, g_stateDz = 0; // non encore lus par GetDeviceState
-// Vraie souris : mouvement non encore consommé (état, événements), boutons, activité
-LONG g_realDx = 0, g_realDy = 0, g_realCursorDx = 0, g_realCursorDy = 0;
-bool g_realButtons = false;
-unsigned long long g_realActivity = 0;
 std::unordered_map<void*, Device> g_devices;
 DWORD g_sequence = 0x40000000;      // numéros de séquence propres, loin de ceux du système
 bool g_loggedMouse = false;
@@ -108,18 +104,6 @@ HRESULT STDMETHODCALLTYPE HkGetDeviceData(void* self, DWORD cbObjectData, LPDIDE
     std::lock_guard lock(g_mutex);
     switch (DeviceType(self)) {
     case Device::Mouse:
-        // Événements de la vraie souris (avant les nôtres) : curseur des menus en mode souris
-        for (DWORD i = 0; i < *inOut; ++i) {
-            const auto* d = reinterpret_cast<const DIDEVICEOBJECTDATA*>(reinterpret_cast<const BYTE*>(rgdod) +
-                                                                        i * cbObjectData);
-            const LONG v = static_cast<LONG>(d->dwData);
-            if (d->dwOfs == DIMOFS_X)
-                g_realCursorDx += v, g_realActivity += v < 0 ? -v : v;
-            else if (d->dwOfs == DIMOFS_Y)
-                g_realCursorDy += v, g_realActivity += v < 0 ? -v : v;
-            else if ((d->dwOfs == DIMOFS_BUTTON0 || d->dwOfs == DIMOFS_BUTTON1) && (d->dwData & 0x80))
-                g_realActivity += 100;
-        }
         if (!g_mouseEvents.empty() && !g_loggedMouse) {
             LOG_INPUT("evenements injectes dans la souris DirectInput");
             g_loggedMouse = true;
@@ -149,13 +133,6 @@ HRESULT STDMETHODCALLTYPE HkGetDeviceState(void* self, DWORD cbData, LPVOID data
     const Device type = DeviceType(self);
     if (type == Device::Mouse && cbData >= sizeof(DIMOUSESTATE)) {
         auto* state = static_cast<DIMOUSESTATE*>(data);
-        g_realDx += state->lX;
-        g_realDy += state->lY;
-        g_realActivity += (state->lX < 0 ? -state->lX : state->lX) + (state->lY < 0 ? -state->lY : state->lY);
-        const bool buttons = (state->rgbButtons[0] | state->rgbButtons[1]) & 0x80;
-        if (buttons && !g_realButtons)
-            g_realActivity += 100;
-        g_realButtons = buttons;
         for (int b = 0; b < 2; ++b)
             if (g_buttons[b])
                 state->rgbButtons[b] |= 0x80;
@@ -297,32 +274,6 @@ void InjectMouseMove(int dx, int dy)
         g_mouseEvents.push_back({static_cast<DWORD>(DIMOFS_X), static_cast<DWORD>(dx)});
     if (dy)
         g_mouseEvents.push_back({static_cast<DWORD>(DIMOFS_Y), static_cast<DWORD>(dy)});
-}
-
-void TakeRealMouseMotion(int& dx, int& dy)
-{
-    std::lock_guard lock(g_mutex);
-    dx = g_realDx, dy = g_realDy;
-    g_realDx = g_realDy = 0;
-}
-
-void TakeRealCursorMotion(int& dx, int& dy)
-{
-    std::lock_guard lock(g_mutex);
-    dx = g_realCursorDx, dy = g_realCursorDy;
-    g_realCursorDx = g_realCursorDy = 0;
-}
-
-bool RealMouseButtonHeld()
-{
-    std::lock_guard lock(g_mutex);
-    return g_realButtons;
-}
-
-unsigned long long RealMouseActivity()
-{
-    std::lock_guard lock(g_mutex);
-    return g_realActivity;
 }
 
 void InjectKey(int dik, bool down)

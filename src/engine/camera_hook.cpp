@@ -335,12 +335,6 @@ bool g_bodyActive = false;
 float g_bodyYaw = 0;                    // cap du corps (angle du vecteur avant, monde Z haut)
 float g_kYaw = -0.003f, g_kPitch = -0.003f; // radians par unité de souris (mesurés)
 int g_lastDx = 0, g_lastDy = 0;         // mouvement injecté à la frame précédente
-// Mode souris : mouvement de la vraie souris depuis la dernière correction de visée (le jeu l'a déjà
-// appliqué à sa caméra), et dernier mouvement vertical : la hauteur n'est ramenée sur le regard
-// qu'après une pause, pour que le jeu lise bien le geste de la souris comme direction du coup
-int g_realSinceAimDx = 0, g_realSinceAimDy = 0;
-ULONGLONG g_lastRealDyMs = 0;
-constexpr ULONGLONG kMousePitchHoldMs = 300;
 float g_lastGameYaw = 0, g_lastGamePitch = 0;
 bool g_loggedAim = false;
 std::mutex g_bodyMutex;
@@ -371,36 +365,25 @@ void Calibrate(float& k, int injected, float observed)
 // Asservit la caméra du jeu sur la manette droite. forward : direction voulue (monde).
 void AimAtHand(const rgl::Transform& game, float bx, float by)
 {
-    const int realDx = g_realSinceAimDx, realDy = g_realSinceAimDy;
-    g_realSinceAimDx = g_realSinceAimDy = 0;
     xr::HandPose hands[2];
     xr::GetHands(hands);
     const rgl::Vector4 fwd{-game.u.x, -game.u.y, -game.u.z, 0};
     const float gameYaw = std::atan2(fwd.y, fwd.x);
     const float gamePitch = std::asin(std::clamp(fwd.z, -1.0f, 1.0f));
 
-    // Le jeu a reçu notre correction précédente et la vraie souris
-    Calibrate(g_kYaw, g_lastDx + realDx, WrapAngle(gameYaw - g_lastGameYaw));
-    if (realDy == 0) // la vraie souris peut buter sur la limite de hauteur du jeu : mesure fausse
-        Calibrate(g_kPitch, g_lastDy, gamePitch - g_lastGamePitch);
+    Calibrate(g_kYaw, g_lastDx, WrapAngle(gameYaw - g_lastGameYaw));
+    Calibrate(g_kPitch, g_lastDy, gamePitch - g_lastGamePitch);
     g_lastDx = g_lastDy = 0;
     g_lastGameYaw = gameYaw, g_lastGamePitch = gamePitch;
 
     if (xr::IsSwingBusy())
         return;
-    // Mode souris : visée au regard. Coup de mêlée tenu (bouton de la vraie souris) : la direction
-    // est choisie, on ne touche plus à la caméra jusqu'au relâchement
-    const bool mouse = xr::IsMouseMode();
-    const bool ranged = xr::IsBowMode() || xr::IsTriggerAttackMode();
-    if (mouse && !ranged && input::RealMouseButtonHeld())
-        return;
-    const bool holdPitch = mouse && GetTickCount64() - g_lastRealDyMs < kMousePitchHoldMs;
     // Direction voulue (espace LOCAL) : arc bandé (et 1 s après le tir) -> axe de la flèche
     // (main droite vers main gauche) ; sinon selon la source choisie (clic du stick gauche) : regard (centre de la
     // vue), main gauche ou main droite
     float dx, dy, dz;
     const bool bow = xr::IsBowMode();
-    if (!mouse && bow && xr::IsBowAiming() && hands[0].valid && hands[1].valid) {
+    if (bow && xr::IsBowAiming() && hands[0].valid && hands[1].valid) {
         dx = hands[0].px - hands[1].px, dy = hands[0].py - hands[1].py, dz = hands[0].pz - hands[1].pz;
         const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (len < 0.05f)
@@ -408,7 +391,7 @@ void AimAtHand(const rgl::Transform& game, float bx, float by)
         dx /= len, dy /= len, dz /= len;
     } else {
         float x, y, z, w;
-        const xr::AimSource source = mouse ? xr::AimSource::Head : xr::GetAimSource();
+        const xr::AimSource source = xr::GetAimSource();
         if (source == xr::AimSource::Head) {
             xr::HeadPose head;
             if (!xr::GetHeadPose(head))
@@ -431,7 +414,7 @@ void AimAtHand(const rgl::Transform& game, float bx, float by)
     int mx = 0, my = 0;
     if (std::fabs(errYaw) > kAimDeadzone)
         mx = std::clamp(static_cast<int>(std::lround(AimGain() * errYaw / g_kYaw)), -kAimMaxStep, kAimMaxStep);
-    if (std::fabs(errPitch) > kAimDeadzone && !holdPitch)
+    if (std::fabs(errPitch) > kAimDeadzone)
         my = std::clamp(static_cast<int>(std::lround(AimGain() * errPitch / g_kPitch)), -kAimMaxStep, kAimMaxStep);
     if (mx || my)
         input::InjectMouseMove(mx, my);
@@ -600,30 +583,20 @@ uintptr_t RenderMapStereo(void* scene, rgl::RenderContext* ctx, bool arg, xr::He
                    game.znear > 0 ? 2 * std::atan(game.right / game.znear) * 180 / kPi : 0.0f, uiScale);
         g_loggedMap = true;
     }
-    uintptr_t result;
-    rgl::RenderContext* second = stereo::Enabled() ? stereo::PrepareSecond(ctx) : nullptr;
-    if (second) {
-        g_indexInPair = 0;
+    // Toujours en rendu alterné, même en vraie stéréo : le jeu ajoute le terrain et les icônes de la
+    // carte au contexte du widget après rglScene::render, jamais au second contexte (œil droit noir
+    // sur le Frame)
+    const int inPair = g_indexInPair;
+    g_indexInPair ^= 1;
+    const int eyeIndex = inPair ^ (config::GetBool(config::Id::EyeOrderSwap) ? 1 : 0);
+    if (inPair == 0) {
         ++g_pairId;
-        PrepareMapEye(cam, game, head, 0, scale, true);
-        result = g_sceneRender(scene, ctx, arg);
-        const stereo::SceneShadowState shadows = stereo::SaveSceneShadows(scene);
-        PrepareMapEye(second->camera, game, head, 1, scale, true);
-        g_sceneRender(scene, second, arg);
-        stereo::RestoreSceneShadows(scene, shadows);
+        g_pairHead = head;
     } else {
-        const int inPair = g_indexInPair;
-        g_indexInPair ^= 1;
-        const int eyeIndex = inPair ^ (config::GetBool(config::Id::EyeOrderSwap) ? 1 : 0);
-        if (inPair == 0) {
-            ++g_pairId;
-            g_pairHead = head;
-        } else {
-            head = g_pairHead;
-        }
-        PrepareMapEye(cam, game, head, eyeIndex, scale, false);
-        result = g_sceneRender(scene, ctx, arg);
+        head = g_pairHead;
     }
+    PrepareMapEye(cam, game, head, eyeIndex, scale, false);
+    const uintptr_t result = g_sceneRender(scene, ctx, arg);
     g_loggedApply = true;
     render::profile::SceneFill(render::profile::NowMs() - start);
     return result;
@@ -645,10 +618,6 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
         configRoll = config::GetInt(config::Id::RollMode);
         g_rollMode = configRoll;
     }
-    // Vraie souris lue par le jeu pour cette image (déjà appliquée à sa caméra)
-    int realDx = 0, realDy = 0;
-    if (ctx && IsMainScene(ctx))
-        input::TakeRealMouseMotion(realDx, realDy);
     xr::HeadPose head;
     // Carte du monde immersive : en stéréo bien que le curseur soit affiché
     const bool map = ctx && IsMainScene(ctx) && IsMapContext(ctx);
@@ -681,20 +650,12 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
     rgl::Camera& cam = ctx->camera;
     const rgl::Transform game = cam.transform;
 
-    // Cap du corps : initialisé sur celui du jeu, puis tourné au stick (ou à la souris)
+    // Cap du corps : initialisé sur celui du jeu, puis tourné au stick
     if (!g_bodyActive) {
         g_bodyYaw = std::atan2(-game.u.y, -game.u.x);
         g_bodyActive = true;
         g_lastDx = g_lastDy = 0;
-        g_realSinceAimDx = g_realSinceAimDy = 0;
-        realDx = realDy = 0;
     }
-    // Mode souris : le corps tourne avec la caméra du jeu, de ce que la souris lui a fait tourner
-    g_realSinceAimDx += realDx, g_realSinceAimDy += realDy;
-    if (realDy)
-        g_lastRealDyMs = GetTickCount64();
-    if (xr::IsMouseMode())
-        g_bodyYaw += g_kYaw * realDx;
     g_bodyYaw = WrapAngle(g_bodyYaw + xr::TakeTurn());
     const float bx = -std::cos(g_bodyYaw), by = -std::sin(g_bodyYaw);
     {

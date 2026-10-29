@@ -16,15 +16,6 @@ void InjectMouseButton(int button, bool down);
 void InjectMouseWheel(int notches);
 void InjectMouseMove(int dx, int dy);
 
-// Vraie souris (pas nos injections), relevée à la lecture du jeu. Mouvement lu par état
-// (combat) : à consommer par le rendu de la scène. Mouvement lu en événements (interface) :
-// à consommer par le curseur des menus. Activité : compteur croissant (mouvement + clics),
-// pour savoir quel périphérique le joueur utilise.
-void TakeRealMouseMotion(int& dx, int& dy);
-void TakeRealCursorMotion(int& dx, int& dy);
-bool RealMouseButtonHeld();
-unsigned long long RealMouseActivity();
-
 // Clavier : code DIK_* (dinput.h), appuyé / relâché
 void InjectKey(int dik, bool down);
 

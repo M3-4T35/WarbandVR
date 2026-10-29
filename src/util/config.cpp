@@ -102,14 +102,6 @@ const Definition kDefs[kCount] = {
       "Elargit le champ de vue de la camera de la carte : l'interface (boutons, libelles, zone cliquable) "
       "couvre une plus grande part de la vue et reste alignee sur la carte. 1 = champ de vue du jeu."}},
     // Contrôles
-    {"Controls", "input_mode", kControls, {"Input", "Commandes"}, Kind::Choice, 0, 0, 2,
-     {"Auto|VR controllers|Mouse and keyboard", "Auto|Manettes VR|Souris et clavier"},
-     {"Mouse and keyboard: the mouse turns the body and picks the attack direction, the gaze aims (crosshair "
-      "at the centre of the view), Home recenters. Auto: whichever was used last (mouse moved, or a "
-      "controller picked up).",
-      "Souris et clavier : la souris tourne le corps et choisit la direction des coups, le regard vise "
-      "(reticule au centre de la vue), Origine (Home) recentre. Auto : le dernier utilise (souris bougee, ou "
-      "manette prise en main)."}},
     {"Controls", "turn_speed", kControls, {"Stick turning (degrees/s)", "Rotation au stick (degres/s)"}, Kind::Float,
      143.0f, 10.0f, 720.0f, kNone,
      {"Body turning speed, right stick fully pushed.", "Vitesse de rotation du corps, stick droit a fond."}},
