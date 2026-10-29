@@ -46,7 +46,7 @@ constexpr char kComputePlanesSig[] =
     "40 55 48 8B EC 48 83 EC 50 80 39 00 0F 29 7C 24 30 4C 8B D1 C7 41 04 06 00 00 00 0F 85";
 
 // mbMapWindow::updateCamera(float) : caméra de la carte du monde, à chaque image où la carte est active
-constexpr char kMapUpdateCameraSig[] = "48 8B C4 55 48 8D 68 D8 48 81 EC 20 01 00 00 F3 0F 10 1D";
+constexpr char kMapUpdateCameraSig[] = "48 8B C4 55 48 8D 68 ?? 48 81 EC ?? ?? 00 00 F3 0F 10 1D ?? ?? ?? ?? 48 89 58 18";
 
 // Valeurs de retour transmises telles quelles (rax), quel que soit leur type réel
 using SceneRenderFn = uintptr_t(__fastcall*)(void* scene, rgl::RenderContext* ctx, bool arg);
