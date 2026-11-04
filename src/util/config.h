@@ -58,6 +58,9 @@ enum class Id {
     TrueStereo,
     ScreenInHandsLayer,
     DebugCapture,
+    HeadPredictionMs,
+    LightGpuSync,
+    CopyWaitYield,
     Count
 };
 

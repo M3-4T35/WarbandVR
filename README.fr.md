@@ -231,6 +231,8 @@ prochain lancement, pour les modules qui proposent cette langue.
 | | **Vraie stéréo** | Oui |
 | | Écran virtuel dessiné avec les manettes : auto (SteamVR) / toujours / jamais | Auto |
 | | Diagnostics : œil droit en premier, image gauche dans les deux yeux, temps par image dans le log | Non |
+| | Expérimental : prédiction de la tête en plus (ms) | 0 |
+| | Expérimental : synchronisation GPU allégée, libérer le processeur pendant l'attente des copies | Non |
 
 ## Commandes
 

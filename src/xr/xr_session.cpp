@@ -238,6 +238,7 @@ private:
     bool hasAudioGuid_ = false;
     PFN_xrGetAudioOutputDeviceGuidOculus getAudioGuid_ = nullptr; // trouvée une fois
     bool audioGuidLooked_ = false;
+    float predictionLogged_ = 0; // prédiction de la tête en plus, écrite dans le log
     void UpdateAudio();
     // Cadence du jeu calée sur le casque (rendu alterné : 2 images par rafraîchissement)
     void UpdatePacing(XrDuration period, bool stereo);
@@ -636,8 +637,13 @@ void XrApp::FinishCopies(bool wait)
     if (hr == S_FALSE && (wait || ++pendingFrames_ > 3)) {
         Phase p("attente fin de copie D3D11");
         const ULONGLONG deadline = GetTickCount64() + 200;
-        while ((hr = context_->GetData(copyDone_, nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline)
-            YieldProcessor();
+        const bool yield = config::GetBool(config::Id::CopyWaitYield);
+        while ((hr = context_->GetData(copyDone_, nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline) {
+            if (yield)
+                SwitchToThread(); // laisse le processeur aux threads du jeu
+            else
+                YieldProcessor();
+        }
         if (hr != S_OK && !copyWarned_) {
             LOG_XR("ALERTE : copie D3D11 non terminee (0x%08lX)", static_cast<unsigned long>(hr));
             copyWarned_ = true;
@@ -1006,7 +1012,31 @@ void XrApp::RenderFrame()
                            XR_SUCCEEDED(xrLocateViews(session_, &vli, &vs, 2, &viewCount, eyeViews)) &&
                            viewCount == 2 && (vs.viewStateFlags & needed) == needed;
     if (eyesValid) {
-        PublishHead(&loc.pose, eyeViews);
+        // Pose donnée au jeu : prédite plus loin si demandé (son image s'affiche plus tard que cette
+        // frame). Les manettes de cette frame gardent la pose de son affichage (loc, eyeViews).
+        const float extraMs = config::Get(config::Id::HeadPredictionMs);
+        XrSpaceLocation gameLoc = loc;
+        XrView gameViews[2] = {eyeViews[0], eyeViews[1]};
+        if (extraMs > 0) {
+            XrViewLocateInfo gvli = vli;
+            gvli.displayTime = fs.predictedDisplayTime + static_cast<XrTime>(extraMs * 1e6f);
+            XrSpaceLocation l{XR_TYPE_SPACE_LOCATION};
+            XrViewState gvs{XR_TYPE_VIEW_STATE};
+            XrView gv[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+            uint32_t n = 0;
+            if (XR_SUCCEEDED(xrLocateSpace(viewSpace_, localSpace_, gvli.displayTime, &l)) &&
+                (l.locationFlags & needed) == needed &&
+                XR_SUCCEEDED(xrLocateViews(session_, &gvli, &gvs, 2, &n, gv)) && n == 2 &&
+                (gvs.viewStateFlags & needed) == needed) {
+                gameLoc = l;
+                gameViews[0] = gv[0], gameViews[1] = gv[1];
+            }
+            if (extraMs != predictionLogged_) {
+                LOG_XR("prediction de la tete pour le jeu : +%.1f ms", extraMs);
+                predictionLogged_ = extraMs;
+            }
+        }
+        PublishHead(&gameLoc.pose, gameViews);
         if (!eyesLogged_) {
             constexpr float kDeg = 57.29578f;
             const float dx = eyeViews[1].pose.position.x - eyeViews[0].pose.position.x;

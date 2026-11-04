@@ -228,6 +228,8 @@ for the modules that provide that language.
 | | **True stereo** | Yes |
 | | Virtual screen drawn with the controllers: auto (SteamVR) / always / never | Auto |
 | | Diagnostics: right eye first, left image in both eyes, frame timings in the log | No |
+| | Experimental: extra head prediction (ms) | 0 |
+| | Experimental: lighter GPU synchronization, free the CPU while waiting for copies | No |
 
 ## Controls
 

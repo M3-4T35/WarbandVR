@@ -230,6 +230,32 @@ const Definition kDefs[kCount] = {
       "En stereo, toutes les 15 s (10 fois au plus), enregistre l'oeil gauche, l'oeil droit et l'interface d'une "
       "meme paire en PNG dans le dossier warbandVRlog, et liste les contextes rendus dans le log. Comme F11. Le jeu se fige "
       "quelques secondes pendant chaque capture."}},
+    {"Advanced", "head_prediction_ms", kAdvanced,
+     {"Experimental: extra head prediction (ms)", "Experimental : prediction de la tete en plus (ms)"},
+     Kind::Float, 0.0f, 0.0f, 50.0f, kNone,
+     {"The game renders from the head pose predicted this much later than the next headset frame, closer to "
+      "when its image is really shown: less correction (smearing, wobble) by the headset. Too high: the view "
+      "overshoots when turning the head. 0 = as before. Try 5 to 15.",
+      "Le jeu rend depuis la pose de la tete predite autant plus tard que la prochaine frame du casque, plus "
+      "pres du moment ou son image est vraiment affichee : moins de correction (trainees, flottement) par le "
+      "casque. Trop haut : la vue depasse quand on tourne la tete. 0 = comme avant. Essayer 5 a 15."}},
+    {"Advanced", "light_gpu_sync", kAdvanced,
+     {"Experimental: lighter GPU synchronization", "Experimental : synchronisation GPU allegee"}, Kind::Bool, 0, 0,
+     1, kNone,
+     {"Checks whether the copies for the headset are finished without forcing the game's GPU commands to be "
+      "sent early (Present sends them anyway). May save a little GPU and CPU time; may add one frame of delay "
+      "on some drivers.",
+      "Verifie si les copies pour le casque sont finies sans forcer l'envoi anticipe des commandes GPU du jeu "
+      "(le Present les envoie de toute facon). Peut faire gagner un peu de temps GPU et processeur ; peut "
+      "ajouter une image de retard avec certains pilotes."}},
+    {"Advanced", "copy_wait_yield", kAdvanced,
+     {"Experimental: free the CPU while waiting for copies",
+      "Experimental : liberer le processeur pendant l'attente des copies"},
+     Kind::Bool, 0, 0, 1, kNone,
+     {"When the headset thread has to wait for a GPU copy, it gives its CPU time to other threads (the game) "
+      "instead of spinning. Useful on CPUs with few cores; the wait may end slightly later.",
+      "Quand le thread du casque doit attendre une copie GPU, il laisse son temps processeur aux autres threads "
+      "(le jeu) au lieu de tourner a vide. Utile avec peu de coeurs ; l'attente peut finir un peu plus tard."}},
 };
 
 std::atomic<float> g_values[kCount];

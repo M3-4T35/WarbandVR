@@ -203,9 +203,11 @@ void DumpEye(IDirect3DDevice9* device, IDirect3DSurface9* surface, const RenderV
 // Copies terminées côté GPU -> la plus récente de sa catégorie devient disponible
 void UpdateCompleted()
 {
+    // Synchronisation allégée : pas d'envoi anticipé des commandes du jeu (le Present les envoie)
+    const DWORD flags = config::GetBool(config::Id::LightGpuSync) ? 0 : D3DGETDATA_FLUSH;
     for (int i = 0; i < kSharedSlots; ++i) {
         Slot& s = g_slots[i];
-        if (s.pending && s.query->GetData(nullptr, 0, D3DGETDATA_FLUSH) == S_OK) {
+        if (s.pending && s.query->GetData(nullptr, 0, flags) == S_OK) {
             s.pending = false;
             int& latest = g_latest[Category(s.view)];
             if (latest == -1 || s.seq > g_slots[latest].seq)
