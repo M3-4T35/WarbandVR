@@ -106,6 +106,20 @@ target_compile_options(warband_vr_config PRIVATE /utf-8 /W4)
 target_link_libraries(warband_vr_config PRIVATE comctl32 winhttp comdlg32 shell32)
 set_property(TARGET warband_vr_config PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Release : optimisation à l'édition de liens entre fichiers (LTO / LTCG) si la chaîne la prend en
+# charge (vérifié par CMake, sinon ignorée), données et fonctions dans des sections séparées pour
+# que l'éditeur de liens retire le code inutilisé et fusionne les doublons.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT WARBANDVR_IPO OUTPUT _ipo_output LANGUAGES CXX)
+message(STATUS "WarbandVR : optimisation a l'edition de liens ${WARBANDVR_IPO}")
+foreach(t warband_vr warband_vr_injector warband_vr_config)
+    target_compile_options(${t} PRIVATE "$<$<CONFIG:Release>:/Gw;/Gy>")
+    target_link_options(${t} PRIVATE "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")
+    if(WARBANDVR_IPO)
+        set_property(TARGET ${t} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
+endforeach()
+
 # clang-cl (compilation croisée) : idiomes MSVC voulus, que cl.exe ne signale pas
 # (pointeurs de fonction <-> void* pour MinHook et GetProcAddress, STRUCT s{sizeof(s)}).
 # Après /W4, qui les réactiverait.

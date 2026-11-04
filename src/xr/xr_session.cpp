@@ -236,6 +236,8 @@ private:
     bool cursorFailed_ = false;
     bool eyesLogged_ = false;
     bool hasAudioGuid_ = false;
+    PFN_xrGetAudioOutputDeviceGuidOculus getAudioGuid_ = nullptr; // trouvée une fois
+    bool audioGuidLooked_ = false;
     void UpdateAudio();
     // Cadence du jeu calée sur le casque (rendu alterné : 2 images par rafraîchissement)
     void UpdatePacing(XrDuration period, bool stereo);
@@ -656,10 +658,13 @@ void XrApp::UpdateAudio()
         return; // FMOD pas encore chargé
     wchar_t id[XR_MAX_AUDIO_DEVICE_STR_SIZE_OCULUS]{};
     if (hasAudioGuid_ && instance_ != XR_NULL_HANDLE) {
-        PFN_xrGetAudioOutputDeviceGuidOculus get = nullptr;
-        if (XR_SUCCEEDED(xrGetInstanceProcAddr(instance_, "xrGetAudioOutputDeviceGuidOculus",
-                                               reinterpret_cast<PFN_xrVoidFunction*>(&get))) &&
-            get && XR_FAILED(get(instance_, id)))
+        if (!audioGuidLooked_) {
+            audioGuidLooked_ = true;
+            if (XR_FAILED(xrGetInstanceProcAddr(instance_, "xrGetAudioOutputDeviceGuidOculus",
+                                                reinterpret_cast<PFN_xrVoidFunction*>(&getAudioGuid_))))
+                getAudioGuid_ = nullptr;
+        }
+        if (getAudioGuid_ && XR_FAILED(getAudioGuid_(instance_, id)))
             id[0] = 0;
     }
     engine::SetHeadsetAudioDevice(id);
@@ -1288,6 +1293,8 @@ void XrApp::Shutdown()
     localSpace_ = XR_NULL_HANDLE;
     session_ = XR_NULL_HANDLE;
     instance_ = XR_NULL_HANDLE;
+    getAudioGuid_ = nullptr; // propre à l'instance
+    audioGuidLooked_ = false;
     if (copyDone_)
         copyDone_->Release();
     if (context_)

@@ -854,8 +854,15 @@ bool Hook(void* target, void* detour, void** original, const char* name)
 void EndContextFrame(bool force)
 {
     FlushToken();
+    const ULONGLONG now = GetTickCount64();
+    // Rien à écrire avant 2 s depuis la dernière ligne : pas de comparaison (chaque image)
+    if (g_frameContexts.empty() || (!force && now - g_lastContextsLogMs < 2000)) {
+        g_frameContexts.clear();
+        return;
+    }
     // Structure de l'image sans les numéros de paire (qui changent à chaque image)
     std::string structure;
+    structure.reserve(g_frameContexts.size());
     for (size_t i = 0; i < g_frameContexts.size(); ++i) {
         if (g_frameContexts.compare(i, 7, "(paire ") == 0) {
             const size_t comma = g_frameContexts.find(',', i);
@@ -867,9 +874,7 @@ void EndContextFrame(bool force)
         }
         structure += g_frameContexts[i];
     }
-    const ULONGLONG now = GetTickCount64();
-    if (!g_frameContexts.empty() &&
-        (force || (structure != g_lastContexts && now - g_lastContextsLogMs >= 2000))) {
+    if (force || structure != g_lastContexts) {
         LOG_ENGINE("contextes de l'image : %s", g_frameContexts.c_str());
         g_lastContexts = structure;
         g_lastContextsLogMs = now;

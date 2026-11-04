@@ -164,9 +164,14 @@ void SetHeadsetAudioDevice(const wchar_t* endpointId)
     static bool comReady = false;
     if (!comReady)
         comReady = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) || true;
-    IMMDeviceEnumerator* enumerator = nullptr;
-    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator))))
+    // Appelé chaque seconde par le thread XR : l'énumérateur est créé une fois et gardé (sa
+    // création coûte plusieurs millisecondes, surtout sous Wine / Proton)
+    static IMMDeviceEnumerator* enumerator = nullptr;
+    if (!enumerator &&
+        FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)))) {
+        enumerator = nullptr;
         return;
+    }
     IMMDevice* device = nullptr;
     if (endpointId && *endpointId)
         enumerator->GetDevice(endpointId, &device);
@@ -177,7 +182,6 @@ void SetHeadsetAudioDevice(const wchar_t* endpointId)
         name = FriendlyName(device);
         device->Release();
     }
-    enumerator->Release();
     if (name.empty())
         return;
     std::lock_guard lock(g_mutex);

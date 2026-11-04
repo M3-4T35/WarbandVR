@@ -267,7 +267,15 @@ bool HandRenderer::Render(const XrView eyes[2], const XrControls& pointer, XrSpa
         XMFLOAT4X4 rotation;
         const float* color;
     };
-    std::vector<Box> boxes;
+    // Au plus 4 boîtes (2 boîtiers, 1 rayon) : tableau fixe, pas d'allocation à chaque frame
+    struct Boxes {
+        Box items[4];
+        size_t count = 0;
+        void push_back(const Box& b) { items[count++] = b; }
+        const Box* begin() const { return items; }
+        const Box* end() const { return items + count; }
+        size_t size() const { return count; }
+    } boxes;
     for (int h = 0; h < 2; ++h) {
         const XrControls::Hand& hand = pointer.GetHand(h);
         if (!hand.valid)
