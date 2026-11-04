@@ -30,6 +30,8 @@ enum class Id {
     TurnMode,
     SnapAngle,
     TurnDeadzone,
+    MouseTurning,
+    MouseTurnSpeed,
     JumpThreshold,
     AimSource,
     // Combat

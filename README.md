@@ -211,6 +211,7 @@ for the modules that provide that language.
 | | **Stick turning mode**: smooth / snap | Smooth |
 | | Snap turning: step | 30° |
 | | Turning stick deadzone | 0.2 |
+| | **Mouse turning** / its speed (1 = the game's mouse sensitivity) | Yes / 1 |
 | | Jump threshold (right stick up) | 0.7 |
 | | Crosshair source at start: gaze / left hand / right hand | Gaze |
 | Combat | Gesture attacks | Yes |
@@ -260,6 +261,13 @@ to travel there, exactly as with the mouse. The same buttons as the virtual scre
 / down = zoom, left / right = rotate the camera). Off in the settings (*Immersive campaign map*):
 the map stays on the virtual screen. *Interface size* widens the map camera's field of view: the
 interface and the clickable area get bigger and stay aligned with the map.
+
+### Turning with the mouse
+
+If your play space is too small to turn around, moving the mouse **left / right turns the body**,
+like the right stick, with or without controllers (setting *Mouse turning*, on by default; its
+speed is relative to the game's mouse sensitivity). The height of the view always follows your
+head.
 
 ### Combat, towns, walking
 

@@ -115,6 +115,15 @@ const Definition kDefs[kCount] = {
     {"Controls", "turn_deadzone", kControls, {"Turning stick deadzone", "Zone morte du stick de rotation"},
      Kind::Float, 0.2f, 0.0f, 0.9f, kNone,
      {"Below this, the right stick does not turn.", "En deca, le stick droit ne fait pas tourner."}},
+    {"Controls", "mouse_turning", kControls, {"Mouse turning", "Rotation a la souris"}, Kind::Bool, 1, 0, 1, kNone,
+     {"Moving the mouse left / right turns the body, as the right stick does (no need to turn around "
+      "physically). Works with or without controllers.",
+      "Bouger la souris a gauche / a droite tourne le corps, comme le stick droit (inutile de se retourner "
+      "physiquement). Avec ou sans manettes."}},
+    {"Controls", "mouse_turn_speed", kControls, {"Mouse turning: speed", "Rotation a la souris : vitesse"},
+     Kind::Float, 1.0f, 0.2f, 5.0f, kNone,
+     {"1 = the game's mouse sensitivity. Higher: the body turns faster for the same mouse movement.",
+      "1 = sensibilite de la souris du jeu. Plus haut : le corps tourne plus vite pour un meme mouvement."}},
     {"Controls", "jump_threshold", kControls, {"Jump threshold (right stick up)", "Seuil du saut (stick droit haut)"},
      Kind::Float, 0.7f, 0.2f, 1.0f, kNone,
      {"Right stick pushed up beyond this: jump.", "Stick droit pousse vers le haut au-dela : saut."}},

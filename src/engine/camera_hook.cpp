@@ -335,6 +335,9 @@ bool g_bodyActive = false;
 float g_bodyYaw = 0;                    // cap du corps (angle du vecteur avant, monde Z haut)
 float g_kYaw = -0.003f, g_kPitch = -0.003f; // radians par unité de souris (mesurés)
 int g_lastDx = 0, g_lastDy = 0;         // mouvement injecté à la frame précédente
+// Vraie souris depuis la dernière correction de visée (le jeu l'a déjà appliquée à sa caméra) :
+// comptée dans la mesure du rapport souris -> angle
+int g_realSinceAimDx = 0, g_realSinceAimDy = 0;
 float g_lastGameYaw = 0, g_lastGamePitch = 0;
 bool g_loggedAim = false;
 std::mutex g_bodyMutex;
@@ -371,8 +374,11 @@ void AimAtHand(const rgl::Transform& game, float bx, float by)
     const float gameYaw = std::atan2(fwd.y, fwd.x);
     const float gamePitch = std::asin(std::clamp(fwd.z, -1.0f, 1.0f));
 
-    Calibrate(g_kYaw, g_lastDx, WrapAngle(gameYaw - g_lastGameYaw));
-    Calibrate(g_kPitch, g_lastDy, gamePitch - g_lastGamePitch);
+    const int realDx = g_realSinceAimDx, realDy = g_realSinceAimDy;
+    g_realSinceAimDx = g_realSinceAimDy = 0;
+    Calibrate(g_kYaw, g_lastDx + realDx, WrapAngle(gameYaw - g_lastGameYaw));
+    if (realDy == 0) // la vraie souris peut buter sur la limite de hauteur du jeu : mesure fausse
+        Calibrate(g_kPitch, g_lastDy, gamePitch - g_lastGamePitch);
     g_lastDx = g_lastDy = 0;
     g_lastGameYaw = gameYaw, g_lastGamePitch = gamePitch;
 
@@ -618,6 +624,10 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
         configRoll = config::GetInt(config::Id::RollMode);
         g_rollMode = configRoll;
     }
+    // Vraie souris lue par le jeu pour cette image (déjà appliquée à sa caméra)
+    int realDx = 0, realDy = 0;
+    if (ctx && IsMainScene(ctx))
+        input::TakeRealMouseMotion(realDx, realDy);
     xr::HeadPose head;
     // Carte du monde immersive : en stéréo bien que le curseur soit affiché
     const bool map = ctx && IsMainScene(ctx) && IsMapContext(ctx);
@@ -650,12 +660,19 @@ uintptr_t __fastcall HkSceneRender(void* scene, rgl::RenderContext* ctx, bool ar
     rgl::Camera& cam = ctx->camera;
     const rgl::Transform game = cam.transform;
 
-    // Cap du corps : initialisé sur celui du jeu, puis tourné au stick
+    // Cap du corps : initialisé sur celui du jeu, puis tourné au stick et à la souris
     if (!g_bodyActive) {
         g_bodyYaw = std::atan2(-game.u.y, -game.u.x);
         g_bodyActive = true;
         g_lastDx = g_lastDy = 0;
+        g_realSinceAimDx = g_realSinceAimDy = 0;
+        realDx = realDy = 0;
     }
+    g_realSinceAimDx += realDx, g_realSinceAimDy += realDy;
+    // Rotation à la souris : le corps tourne de ce que la souris a fait tourner à la caméra du jeu
+    // (vitesse 1), la visée reste ainsi sur le regard. La hauteur reste celle de la tête.
+    if (realDx && config::GetBool(config::Id::MouseTurning))
+        g_bodyYaw += g_kYaw * realDx * config::Get(config::Id::MouseTurnSpeed);
     g_bodyYaw = WrapAngle(g_bodyYaw + xr::TakeTurn());
     const float bx = -std::cos(g_bodyYaw), by = -std::sin(g_bodyYaw);
     {

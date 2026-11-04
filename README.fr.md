@@ -214,6 +214,7 @@ prochain lancement, pour les modules qui proposent cette langue.
 | | **Mode de rotation** : continue / par crans | Continue |
 | | Rotation par crans : cran | 30° |
 | | Zone morte du stick de rotation | 0,2 |
+| | **Rotation à la souris** / sa vitesse (1 = sensibilité de la souris du jeu) | Oui / 1 |
 | | Seuil du saut (stick droit vers le haut) | 0,7 |
 | | Source du réticule au démarrage : regard / main gauche / main droite | Regard |
 | Combat | Attaques au geste | Oui |
@@ -264,6 +265,13 @@ virtuel (stick haut / bas = zoom, gauche / droite = rotation de la caméra). Dé
 réglages (*Carte de campagne immersive*) : la carte reste alors sur l'écran virtuel.
 *Taille de l'interface* élargit le champ de vue de la caméra de la carte : l'interface et la zone
 cliquable grandissent en restant alignées sur la carte.
+
+### Tourner à la souris
+
+Si votre espace de jeu est trop petit pour vous retourner, bouger la souris **à gauche / à droite
+tourne le corps**, comme le stick droit, avec ou sans manettes (réglage *Rotation à la souris*,
+activé par défaut ; sa vitesse est relative à la sensibilité de la souris du jeu). La hauteur de la
+vue suit toujours la tête.
 
 ### Combat, villes, déplacements
 

@@ -48,6 +48,8 @@ bool g_keys[256]{};                 // touches injectées tenues (codes DIK)
 // l'interface), comme une vraie souris qui alimente les deux : mouvement et molette sont
 // donc injectés dans chacune, indépendamment
 LONG g_stateDx = 0, g_stateDy = 0, g_stateDz = 0; // non encore lus par GetDeviceState
+// Vraie souris (avant nos injections), lue par état : mouvement non encore consommé
+LONG g_realDx = 0, g_realDy = 0;
 std::unordered_map<void*, Device> g_devices;
 DWORD g_sequence = 0x40000000;      // numéros de séquence propres, loin de ceux du système
 bool g_loggedMouse = false;
@@ -133,6 +135,8 @@ HRESULT STDMETHODCALLTYPE HkGetDeviceState(void* self, DWORD cbData, LPVOID data
     const Device type = DeviceType(self);
     if (type == Device::Mouse && cbData >= sizeof(DIMOUSESTATE)) {
         auto* state = static_cast<DIMOUSESTATE*>(data);
+        g_realDx += state->lX;
+        g_realDy += state->lY;
         for (int b = 0; b < 2; ++b)
             if (g_buttons[b])
                 state->rgbButtons[b] |= 0x80;
@@ -274,6 +278,13 @@ void InjectMouseMove(int dx, int dy)
         g_mouseEvents.push_back({static_cast<DWORD>(DIMOFS_X), static_cast<DWORD>(dx)});
     if (dy)
         g_mouseEvents.push_back({static_cast<DWORD>(DIMOFS_Y), static_cast<DWORD>(dy)});
+}
+
+void TakeRealMouseMotion(int& dx, int& dy)
+{
+    std::lock_guard lock(g_mutex);
+    dx = g_realDx, dy = g_realDy;
+    g_realDx = g_realDy = 0;
 }
 
 void InjectKey(int dik, bool down)

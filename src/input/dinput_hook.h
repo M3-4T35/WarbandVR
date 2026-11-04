@@ -16,6 +16,10 @@ void InjectMouseButton(int button, bool down);
 void InjectMouseWheel(int notches);
 void InjectMouseMove(int dx, int dy);
 
+// Vraie souris (pas nos injections) : mouvement lu par le jeu en état (combat) depuis le
+// dernier appel, déjà appliqué à sa caméra. Consommé par le rendu de la scène.
+void TakeRealMouseMotion(int& dx, int& dy);
+
 // Clavier : code DIK_* (dinput.h), appuyé / relâché
 void InjectKey(int dik, bool down);
 
